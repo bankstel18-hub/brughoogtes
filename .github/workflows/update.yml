@@ -1,5 +1,7 @@
 # Haalt elke 10 minuten de waterstanden en verwachtingen op (bruggen en sluizen eens per dag)
 # en zet de app met de nieuwe data op GitHub Pages.
+# Elke run plant zelf de volgende in (job 'volgende'), omdat GitHub geplande runs onregelmatig start.
+# De 'schedule' hieronder blijft als vangnet staan.
 name: Data bijwerken en publiceren
 
 on:
@@ -22,15 +24,15 @@ permissions:
   contents: write   # alleen voor de maandelijkse 'keepalive'-commit
   pages: write
   id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
+  actions: write    # om de volgende run in te plannen
 
 jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
@@ -73,7 +75,7 @@ jobs:
       # GitHub zet geplande workflows uit na 60 dagen zonder activiteit in de repository.
       # Daarom eens per maand een lege commit.
       - name: Repository actief houden
-        if: github.event_name == 'schedule'
+        if: github.event_name != 'push'
         run: |
           last=$(git log -1 --format=%ct)
           if [ $(( $(date +%s) - last )) -gt $(( 40 * 86400 )) ]; then
@@ -81,4 +83,27 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit --allow-empty -m "Repository actief houden (automatisch)"
             git push
+          fi
+
+  # Plant de volgende update over ~10 minuten in. Slaat over als er al een andere run loopt of wacht,
+  # zodat er altijd maar één keten actief is.
+  volgende:
+    needs: update
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Wachten en volgende update starten
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SELF: ${{ github.run_id }}
+        run: |
+          sleep 540
+          active=$(gh api "repos/$REPO/actions/workflows/update.yml/runs?per_page=20" \
+            --jq "[.workflow_runs[] | select((.status==\"queued\" or .status==\"in_progress\" or .status==\"waiting\" or .status==\"pending\") and .id != $SELF)] | length")
+          echo "andere actieve runs: $active"
+          if [ "$active" = "0" ]; then
+            gh api -X POST "repos/$REPO/actions/workflows/update.yml/dispatches" -f ref=main
+            echo "volgende update gestart"
           fi
