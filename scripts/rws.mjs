@@ -362,6 +362,7 @@ function assembleLocks(lockFeats, chamberFeats) {
   const byId = new Map(lockFeats.map((f) => [String(idOf(f.a)), { f, chambers: [] }]));
   const linkKey = chamberFeats.length ? Object.keys(chamberFeats[0].a).find((k) => /^(parentid|lockid|lock_id)$/i.test(k)) : null;
   const orphans = [];
+  let linkedByDistance = 0;
   for (const c of chamberFeats) {
     const a = c.a;
     const ch = {
@@ -372,7 +373,18 @@ function assembleLocks(lockFeats, chamberFeats) {
       sill: (() => { const v = ["silldepthbebu", "silldepthbobi", "silldebthinner", "silldepth"].map((k) => num(a[k])).filter((n) => n != null && n !== 0).map(Math.abs); return v.length ? +Math.min(...v).toFixed(2) : null; })(),
       height: pickNum(a, [/clearanceheight|heightclosed|^height$|hoogte|doorvaarthoogte/i]),
     };
-    const parent = linkKey ? byId.get(String(a[linkKey])) : null;
+    let parent = linkKey ? byId.get(String(a[linkKey])) : null;
+    if (!parent && c.p) {
+      // Kolk-ID's verwijzen soms naar een andere sluislaag: dan koppelen op afstand (binnen 1 km).
+      let bd = 1.0;
+      for (const L of byId.values()) {
+        if (!L.f.p) continue;
+        const dy = (L.f.p[0] - c.p[0]) * 111.2, dx = (L.f.p[1] - c.p[1]) * 111.2 * Math.cos((c.p[0] * Math.PI) / 180);
+        const d = Math.hypot(dx, dy);
+        if (d < bd) { bd = d; parent = L; }
+      }
+      if (parent) linkedByDistance++;
+    }
     if (parent) parent.chambers.push(ch); else orphans.push({ c, ch });
   }
   const out = [];
@@ -389,7 +401,7 @@ function assembleLocks(lockFeats, chamberFeats) {
     });
   }
   for (const { c, ch } of orphans) if (c.p) out.push({ id: idOf(c.a), lat: c.p[0], lng: c.p[1], name: ch.name, place: c.a.city || "", phone: "", chambers: [ch], a: c.a });
-  out.stats = { locks: lockFeats.length, chambers: chamberFeats.length, linkKey, linked: chamberFeats.length - orphans.length, orphanSample: orphans.slice(0, 3).map((o) => ({ parent: linkKey && o.c.a[linkKey], name: o.ch.name })), lockIdSample: lockFeats.slice(0, 3).map((f) => idOf(f.a)) };
+  out.stats = { locks: lockFeats.length, chambers: chamberFeats.length, linkKey, linked: chamberFeats.length - orphans.length, linkedByDistance, orphanSample: orphans.slice(0, 3).map((o) => ({ parent: linkKey && o.c.a[linkKey], name: o.ch.name })), lockIdSample: lockFeats.slice(0, 3).map((f) => idOf(f.a)) };
   return out;
 }
 
