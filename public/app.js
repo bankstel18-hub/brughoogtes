@@ -306,23 +306,45 @@ function popupStation(s) {
     ${sparkline(s)}</div>`;
 }
 
+/* ---------- zoomniveaus: hoe verder ingezoomd, hoe meer details ---------- */
+// 0: heel NL (alleen knelpunten) · 1: regio (bekende hoogtes + meetpunten) · 2: ingezoomd (alles + sluizen)
+const ZOOM_REGION = 10, ZOOM_DETAIL = 12;
+function tier() {
+  if ($("search").value.trim()) return 2;            // bij zoeken altijd alles tonen
+  const z = map.getZoom();
+  return z >= ZOOM_DETAIL ? 2 : z >= ZOOM_REGION ? 1 : 0;
+}
+const radiusFor = (b) => { const z = map.getZoom(); const r = z >= 13 ? 6 : z >= 11 ? 5 : z >= 9 ? 4 : 3; return b.movable ? r : r - 0.5; };
+let lastTier = -1;
+
 function draw() {
   bridgeLayer.clearLayers(); stationLayer.clearLayers(); drawn = [];
-  const water = css("--water");
+  const water = css("--water"), t = tier();
+  lastTier = t;
   for (const b of bridges) {
     const s = state(b);
+    b._m = null;
     if (!passes(b, s)) continue;
-    const usingCur = $("useWater").checked && b.cur != null;
-    const m = L.circleMarker([b.lat, b.lng], {
-      renderer, radius: b.movable ? 6 : 5,
-      color: usingCur ? water : "#0f2a3d", weight: usingCur ? 2.5 : b.movable ? 2 : 1,
-      fillColor: colorOf(s), fillOpacity: 0.95,
-    });
-    m.bindPopup(() => popupBridge(b), { maxWidth: 330 });
-    m.addTo(bridgeLayer);
+    const show = t === 2 || (t === 1 && s !== "unk") || (t === 0 && (s === "bad" || s === "wait"));
+    let m = null;
+    if (show) {
+      const usingCur = $("useWater").checked && b.cur != null;
+      m = L.circleMarker([b.lat, b.lng], {
+        renderer, radius: radiusFor(b),
+        color: usingCur ? water : "#0f2a3d", weight: usingCur ? 2.5 : b.movable ? 1.5 : 1,
+        fillColor: colorOf(s), fillOpacity: 0.95,
+      });
+      m.bindPopup(() => popupBridge(b), { maxWidth: 330 });
+      m.addTo(bridgeLayer);
+      b._m = m;
+    }
     drawn.push({ b, s, m });
   }
-  if ($("showStations").checked) {
+  $("zoomHint").hidden = t === 2;
+  $("zoomHint").textContent = t === 0
+    ? "Je ziet alleen de knelpunten voor je schip. Zoom in voor alle bruggen, meetpunten en sluizen."
+    : "Zoom verder in om ook sluizen en bruggen met onbekende hoogte te zien.";
+  if ($("showStations").checked && t >= 1) {
     for (const st of stations) {
       if (!st.lvl && st.cm == null) continue;
       const m = L.marker([st.lat, st.lng], {
@@ -334,7 +356,7 @@ function draw() {
     }
   }
   lockLayer.clearLayers();
-  if ($("showLocks").checked) {
+  if ($("showLocks").checked && t === 2) {
     const q = $("search").value.trim().toLowerCase();
     const icons = {};
     const iconFor = (st) => icons[st] ||= L.divIcon({ className: "lkicon", html: `<i class="lk" style="background:${colorOf(st)}"></i>`, iconSize: [17, 17] });
@@ -371,7 +393,7 @@ function updateView() {
     el.className = "item"; el.tabIndex = 0;
     el.innerHTML = `<span class="h${cur ? " cur" : ""}" style="background:${colorOf(d.s)}">${fmt(effClosed(b))}</span>
       <div style="min-width:0"><div class="n">${esc(b.name)}</div><div class="m">${b.movable ? "beweegbaar" : "vast"}${cur ? (offsetH() ? " · verwacht" : " · actueel") : ""}${b.waterway ? " · " + esc(b.waterway) : ""}</div></div>`;
-    const go = () => { map.setView([b.lat, b.lng], Math.max(map.getZoom(), 15)); d.m.openPopup(); if (innerWidth <= 760) $("map").scrollIntoView(); };
+    const go = () => { map.setView([b.lat, b.lng], Math.max(map.getZoom(), 15)); setTimeout(() => b._m?.openPopup(), 350); if (innerWidth <= 760) $("map").scrollIntoView(); };
     el.onclick = go; el.onkeydown = (e) => { if (e.key === "Enter") go(); };
     items.appendChild(el);
   }
@@ -429,7 +451,11 @@ $("locate").addEventListener("click", () => {
     map.setView(ll, Math.max(map.getZoom(), 14));
   }, () => setStatus("Locatie niet beschikbaar. Geef de app toestemming voor je locatie.", true), { enableHighAccuracy: true, timeout: 10000 });
 });
-map.on("moveend zoomend", updateView);
+map.on("zoomend", () => {
+  if (tier() !== lastTier) return draw();
+  for (const b of bridges) if (b._m) b._m.setRadius(radiusFor(b));
+});
+map.on("moveend", updateView);
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", draw);
 
 if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));

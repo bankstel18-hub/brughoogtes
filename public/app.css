@@ -104,3 +104,6 @@ button.btn{font:600 13.5px var(--f-ui);padding:5px 10px;border-radius:6px;border
 .dimrow input{width:100%;min-width:0;font:700 15px var(--f-num);color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:3px 6px}
 .pop .ch td.ok{color:#1f8a4c;font-weight:700}
 .pop .ch td.bad{color:#c62f2f;font-weight:700}
+
+.zoomhint{position:fixed;left:calc(185px + 50%);transform:translateX(-50%);top:calc(12px + env(safe-area-inset-top,0px));z-index:600;max-width:min(440px,calc(100vw - 32px));background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.15);text-align:center;pointer-events:none}
+@media (max-width:760px){.zoomhint{left:50%;transform:translateX(-50%);top:calc(10px + env(safe-area-inset-top,0px));max-width:calc(100vw - 120px)}}
