@@ -35,6 +35,22 @@ await step("bruggen", async () => {
   return r;
 });
 
+// Samenvatting van de brugdata in het logboek (voor onderhoud en controle).
+const br = await store().get("bridges");
+const dbg = await store().get("debug-bridges");
+if (br?.bridges?.length) {
+  const B = br.bridges, n = (f) => B.filter(f).length;
+  console.log("brugdata:", JSON.stringify({
+    totaal: B.length, metHoogteGesloten: n((b) => b.closed != null), metHoogteOpen: n((b) => b.open != null),
+    beweegbaar: n((b) => b.movable), metOnderkantNAP: n((b) => b.underNAP != null), metReferentieNAP: n((b) => b.refNAP != null),
+    metReferentieNaam: n((b) => b.refName), zonderNaam: n((b) => b.name === "Brug zonder naam"),
+  }));
+  for (const l of dbg?.layers || []) {
+    console.log(`laag ${l.role} (${l.name || l.source}): velden=${(l.fields || []).join(", ")}`);
+    console.log(`  voorbeeld: ${JSON.stringify((l.samples || [l.sample])[0] || {}).slice(0, 900)}`);
+  }
+}
+
 // Klein overzicht voor de app en voor onderhoud.
 const status = await getStatus();
 await store().setJSON("status", { ...status, lastRun: new Date().toISOString() });
