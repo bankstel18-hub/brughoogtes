@@ -22,16 +22,18 @@ L.control.scale({ imperial: false }).addTo(map);
 const renderer = L.canvas({ padding: 0.3 });
 const bridgeLayer = L.layerGroup().addTo(map);
 const stationLayer = L.layerGroup().addTo(map);
+const lockLayer = L.layerGroup().addTo(map);
 const labelLayer = L.layerGroup().addTo(map);
 
 /* ---------- state ---------- */
-let bridges = [], stations = [], forecast = {}, meta = { bridgesAt: null, waterAt: null, forecastAt: null };
+let bridges = [], stations = [], forecast = {}, locks = [], meta = { bridgesAt: null, waterAt: null, forecastAt: null };
 let typeFilter = "all", drawn = [];
 const saved = ls.get("bh-settings") || {};
 if (saved.boat) { $("boatH").value = saved.boat; $("boatR").value = saved.boat; }
 if (saved.margin != null) $("margin").value = saved.margin;
 if (saved.useWater === false) $("useWater").checked = false;
 if (saved.showStations === false) $("showStations").checked = false;
+if (saved.showLocks === false) $("showLocks").checked = false;
 
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const need = () => (parseFloat($("boatH").value) || 0) + (parseFloat($("margin").value) || 0);
@@ -150,9 +152,12 @@ async function loadForecast() {
     meta.forecastAt = d.generatedAt;
   } catch (e) { meta.forecastErr = e.message; }
 }
+async function loadLocks() {
+  try { locks = (await getData("data/locks.json")).locks || []; } catch (e) { meta.locksErr = e.message; }
+}
 async function init() {
   try {
-    await Promise.all([loadBridges(), loadWater(), loadForecast()]);
+    await Promise.all([loadBridges(), loadWater(), loadForecast(), loadLocks()]);
     linkStations(); draw(); fresh();
   } catch (e) {
     setStatus(`Brugdata niet beschikbaar: ${e.message}`, true);
@@ -168,7 +173,7 @@ function fresh() {
   if (meta.bridgesAt) parts.push(`bruggen ${ago(meta.bridgesAt)}`);
   $("freshness").textContent = parts.join(" · ");
   const corrected = bridges.filter((b) => b.cur != null).length;
-  setStatus(`${bridges.length.toLocaleString("nl-NL")} bruggen, ${stations.filter((s) => s.cm != null).length} meetpunten met actuele waterstand, ${Object.keys(forecast).length} met verwachting, ${corrected.toLocaleString("nl-NL")} bruggen gecorrigeerd voor waterstand.`);
+  setStatus(`${bridges.length.toLocaleString("nl-NL")} bruggen, ${stations.filter((s) => s.cm != null).length} meetpunten met actuele waterstand, ${Object.keys(forecast).length} met verwachting, ${locks.length.toLocaleString("nl-NL")} sluizen, ${corrected.toLocaleString("nl-NL")} bruggen gecorrigeerd voor waterstand.`);
 }
 function setStatus(t, err) { const s = $("status"); s.textContent = t; s.classList.toggle("err", !!err); }
 
@@ -255,6 +260,19 @@ function popupBridge(b) {
     <details><summary>Alle gegevens</summary><table>${rows}</table></details>
     <div class="note">${usingCur ? "Gecorrigeerd met het dichtstbijzijnde meetpunt; lokaal kan de waterstand afwijken, en een verwachting is geen garantie." : `Hoogte ${refTxt(b)}. Controleer ter plaatse de hoogteschaal.`}</div></div>`;
 }
+const m2 = (v) => (v == null ? "–" : v.toFixed(v < 10 ? 2 : 1).replace(".", ","));
+function popupLock(l) {
+  const rows = l.chambers.map((c) => `<tr><td>${esc(c.name)}</td><td>${m2(c.length)}</td><td>${m2(c.width)}</td><td>${m2(c.sill)}</td>${l.chambers.some((x) => x.height) ? `<td>${m2(c.height)}</td>` : ""}</tr>`).join("");
+  const hasH = l.chambers.some((x) => x.height);
+  return `<div class="pop"><h3>${esc(l.name)}</h3>
+    ${l.place ? `<div class="note" style="margin:0">${esc(l.place)}</div>` : ""}
+    ${l.chambers.length ? `<table class="ch"><thead><tr><th>Kolk</th><th>Lengte</th><th>Breedte</th><th>Drempel</th>${hasH ? "<th>Hoogte</th>" : ""}</tr></thead><tbody>${rows}</tbody></table>
+      <div class="note">In meters. Drempeldiepte t.o.v. het peil, de ondiepste van boven- en benedenhoofd.${hasH ? " Hoogte: doorvaarthoogte onder een hefdeur of vaste overspanning." : ""}</div>`
+      : `<div class="note">Geen kolkafmetingen in de brondata.</div>`}
+    ${l.phone ? `<div class="note">Contact: <span style="user-select:all">${esc(l.phone)}</span></div>` : ""}
+    <details><summary>Alle gegevens</summary><table>${Object.entries(l.a || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table></details>
+    <div class="note">Bron: Rijkswaterstaat FIS. Controleer bedientijden en actuele stremmingen op vaarweginformatie.nl.</div></div>`;
+}
 function popupStation(s) {
   const lv = s.lvl;
   return `<div class="pop"><h3>${esc(s.name)}</h3><div class="note" style="margin:0">Meetpunt Rijkswaterstaat · ${esc(s.code)}</div>
@@ -290,8 +308,17 @@ function draw() {
       m.addTo(stationLayer);
     }
   }
+  lockLayer.clearLayers();
+  if ($("showLocks").checked) {
+    const q = $("search").value.trim().toLowerCase();
+    const icon = L.divIcon({ className: "lkicon", html: '<i class="lk"></i>', iconSize: [16, 16] });
+    for (const l of locks) {
+      if (q && !(l.name.toLowerCase().includes(q) || (l.place || "").toLowerCase().includes(q))) continue;
+      L.marker([l.lat, l.lng], { icon, keyboard: false, title: l.name }).bindPopup(() => popupLock(l), { maxWidth: 340 }).addTo(lockLayer);
+    }
+  }
   updateView();
-  ls.set("bh-settings", { boat: $("boatH").value, margin: $("margin").value, useWater: $("useWater").checked, showStations: $("showStations").checked });
+  ls.set("bh-settings", { boat: $("boatH").value, margin: $("margin").value, useWater: $("useWater").checked, showStations: $("showStations").checked, showLocks: $("showLocks").checked });
 }
 
 function updateView() {
@@ -353,7 +380,7 @@ $("boatH").addEventListener("input", () => { $("boatR").value = $("boatH").value
 $("boatR").addEventListener("input", () => { $("boatH").value = (+$("boatR").value).toFixed(2); redraw(); });
 ["margin", "search"].forEach((id) => $(id).addEventListener("input", redraw));
 $("when").addEventListener("input", () => { updateWhen(); clearTimeout(t); t = setTimeout(() => { linkStations(); draw(); }, 120); });
-["onlyLow", "useWater", "showStations"].forEach((id) => $(id).addEventListener("change", draw));
+["onlyLow", "useWater", "showStations", "showLocks"].forEach((id) => $(id).addEventListener("change", draw));
 document.querySelectorAll(".chip").forEach((c) => c.addEventListener("click", () => {
   typeFilter = c.dataset.type;
   document.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === c)));
