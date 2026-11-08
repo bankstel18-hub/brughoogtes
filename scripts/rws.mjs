@@ -413,6 +413,7 @@ function parseLatest(j) {
     if (!code || !ms.length) continue;
     ms.sort((a, b) => Date.parse(a.Tijdstip) - Date.parse(b.Tijdstip));
     const m = ms[ms.length - 1];
+    if (Date.now() - Date.parse(m.Tijdstip) > 24 * 3600e3) continue;   // oude of stilgelegde meetpunten overslaan
     out[code] = { cm: num(m.Meetwaarde.Waarde_Numeriek), t: m.Tijdstip };
   }
   return out;
