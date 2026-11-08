@@ -94,9 +94,16 @@ const JOBS = {
 async function planArcgis(base, cfg) {
   const svc = await getJSON(`${base}?f=json`);
   const layers = (svc.layers || []).concat(svc.tables || []);
-  const pickLayer = (re) => layers.filter((l) => re.test(l.name) && !(l.subLayerIds && l.subLayerIds.length) && !/subchamber/i.test(l.name))
-    .sort((a, b) => (/punt|point/i.test(b.name) ? 1 : 0) - (/punt|point/i.test(a.name) ? 1 : 0))[0];
-  const chosen = cfg.roles.map((r) => ({ role: r.role, layer: pickLayer(r.re) })).filter((x) => x.layer);
+  // Per onderdeel de kandidaat-laag met de meeste objecten (punten- en vlakkenlagen kunnen verschillen).
+  const countOf = async (l) => { try { return (await getJSON(`${base}/${l.id}/query?where=1%3D1&returnCountOnly=true&f=json`)).count || 0; } catch { return 0; } };
+  const pickLayer = async (re) => {
+    const cands = layers.filter((l) => re.test(l.name) && !(l.subLayerIds && l.subLayerIds.length) && !/subchamber|deelkamer/i.test(l.name));
+    let best = null, bestN = -1;
+    for (const l of cands) { const n = await countOf(l); if (n > bestN) { best = l; bestN = n; } }
+    return best;
+  };
+  const chosen = [];
+  for (const r of cfg.roles) { const layer = await pickLayer(r.re); if (layer) chosen.push({ role: r.role, layer }); }
   if (!chosen.length) throw new Error(`Geen lagen voor ${cfg.label} gevonden. Lagen: ` + layers.map((l) => l.name).join(", "));
   const tasks = [], meta = [];
   for (const { role, layer } of chosen) {
