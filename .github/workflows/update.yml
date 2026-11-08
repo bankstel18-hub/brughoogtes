@@ -1,0 +1,78 @@
+# Haalt elke 10 minuten de waterstanden en verwachtingen op (bruggen eens per dag)
+# en zet de app met de nieuwe data op GitHub Pages.
+name: Data bijwerken en publiceren
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_bruggen:
+        description: "Bruggen nu opnieuw ophalen"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # alleen voor de maandelijkse 'keepalive'-commit
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: App klaarzetten en vorige data ophalen
+        env:
+          SITE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        run: |
+          mkdir -p _site/data
+          cp -r public/. _site/
+          for f in bridges stations forecast water status; do
+            curl -sfL --max-time 60 "$SITE/data/$f.json" -o "_site/data/$f.json" || rm -f "_site/data/$f.json"
+          done
+          ls -la _site/data
+
+      - name: Data bijwerken bij Rijkswaterstaat
+        run: node scripts/update.mjs _site/data ${{ inputs.force_bruggen && '--force-bruggen' || '' }}
+
+      - name: Tijdelijke bestanden opruimen
+        if: always()
+        run: rm -f _site/data/bridgejob.json _site/data/bj__*.json
+
+      - uses: actions/upload-pages-artifact@v3
+        if: always()
+        with:
+          path: _site
+
+      - id: deploy
+        if: always()
+        uses: actions/deploy-pages@v4
+
+      # GitHub zet geplande workflows uit na 60 dagen zonder activiteit in de repository.
+      # Daarom eens per maand een lege commit.
+      - name: Repository actief houden
+        if: github.event_name == 'schedule'
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt $(( 40 * 86400 )) ]; then
+            git config user.name "brughoogtes-bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "Repository actief houden (automatisch)"
+            git push
+          fi

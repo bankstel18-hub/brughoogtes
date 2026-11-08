@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Brughoogtes Nederland</title>
+<meta name="description" content="Doorvaarthoogtes van bruggen in Nederland met actuele waterstanden van Rijkswaterstaat, voor binnenvaart en pleziervaart.">
+<meta name="theme-color" content="#0b5d8f">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<aside id="panel">
+  <header>
+    <div>
+      <h1>Brughoogtes Nederland</h1>
+      <div class="sub" id="freshness">Gegevens laden…</div>
+    </div>
+    <button class="btn" id="toggle" aria-expanded="true">Inklappen</button>
+  </header>
+
+  <div class="scroll">
+    <section class="sec">
+      <label class="lbl" for="boatH">Kruiphoogte van je schip</label>
+      <div class="boat"><input type="number" id="boatH" min="0" max="25" step="0.05" value="2.50" inputmode="decimal"><span>m</span></div>
+      <input type="range" id="boatR" min="0.5" max="12" step="0.05" value="2.50" aria-label="Kruiphoogte">
+      <div class="small"><label for="margin">Veiligheidsmarge</label> <input type="number" id="margin" min="0" max="2" step="0.05" value="0.10" inputmode="decimal"> m</div>
+      <label class="check"><input type="checkbox" id="useWater" checked> Corrigeer voor waterstand (grote wateren)</label>
+      <div class="when">
+        <label class="lbl" for="when">Vaartijdstip</label>
+        <div class="whenrow"><input type="range" id="when" min="0" max="48" step="1" value="0" aria-describedby="whenOut"><output id="whenOut" for="when">Nu</output></div>
+        <div class="small" id="whenNote">Actuele meting. Schuif om de verwachting van Rijkswaterstaat te gebruiken.</div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <div class="lbl">Tonen</div>
+      <div class="chips" role="group" aria-label="Brugtype">
+        <button class="chip" data-type="all" aria-pressed="true">Alle bruggen</button>
+        <button class="chip" data-type="fixed" aria-pressed="false">Vast</button>
+        <button class="chip" data-type="movable" aria-pressed="false">Beweegbaar</button>
+      </div>
+      <label class="check"><input type="checkbox" id="onlyLow"> Alleen bruggen die te laag zijn voor mij</label>
+      <label class="check"><input type="checkbox" id="showStations" checked> Toon meetpunten waterstand</label>
+      <input type="search" id="search" placeholder="Zoek brug of vaarweg…" autocomplete="off" aria-label="Zoek brug of vaarweg">
+      <div class="legend">
+        <span><i class="dot" style="background:var(--ok)"></i>Past eronderdoor</span>
+        <span><i class="dot" style="background:var(--wait)"></i>Wachten op opening</span>
+        <span><i class="dot" style="background:var(--bad)"></i>Te laag</span>
+        <span><i class="dot" style="background:var(--unk)"></i>Hoogte onbekend</span>
+        <span><i class="sq"></i>Meetpunt waterstand</span>
+        <span><i class="ring"></i>Gecorrigeerd voor waterstand</span>
+      </div>
+    </section>
+
+    <section id="list">
+      <div class="hd">
+        <div class="stats">
+          <div><b id="sTotal">–</b>in beeld</div>
+          <div><b id="sOk" class="c-ok">–</b>past</div>
+          <div><b id="sWait" class="c-wait">–</b>opening</div>
+          <div><b id="sBad" class="c-bad">–</b>te laag</div>
+        </div>
+        <div class="lbl">Laagste bruggen in beeld</div>
+      </div>
+      <div id="items"></div>
+    </section>
+
+    <section class="sec foot">
+      <p>Hoogtes uit Rijkswaterstaat FIS, waterstanden uit RWS WaterWebservices. Gebruik dit als hulpmiddel, niet als vervanging van officiële vaarweginformatie, de Wateralmanak of je eigen waarneming. Controleer bij twijfel altijd de hoogteschaal bij de brug.</p>
+      <p id="status" class="small"></p>
+    </section>
+  </div>
+</aside>
+<main id="map" aria-label="Kaart"></main>
+<button id="locate" class="fab" aria-label="Toon mijn locatie" title="Mijn locatie">
+  <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+</button>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
