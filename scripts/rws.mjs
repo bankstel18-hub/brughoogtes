@@ -401,7 +401,7 @@ function assembleLocks(lockFeats, chamberFeats) {
     });
   }
   for (const { c, ch } of orphans) if (c.p) out.push({ id: idOf(c.a), lat: c.p[0], lng: c.p[1], name: ch.name, place: c.a.city || "", phone: "", chambers: [ch], a: c.a });
-  out.stats = { locks: lockFeats.length, chambers: chamberFeats.length, linkKey, linked: chamberFeats.length - orphans.length, linkedByDistance, orphanSample: orphans.slice(0, 3).map((o) => ({ parent: linkKey && o.c.a[linkKey], name: o.ch.name })), lockIdSample: lockFeats.slice(0, 3).map((f) => idOf(f.a)) };
+  out.stats = { locks: lockFeats.length, chambers: chamberFeats.length, linkKey, linked: chamberFeats.length - orphans.length, linkedByDistance, orphanSample: orphans.slice(0, 3).map((o) => ({ parent: linkKey && o.c.a[linkKey], name: o.ch.name, p: o.c.p })), lockPointSample: lockFeats.slice(0, 3).map((f) => f.p), lockIdSample: lockFeats.slice(0, 3).map((f) => idOf(f.a)) };
   return out;
 }
 
