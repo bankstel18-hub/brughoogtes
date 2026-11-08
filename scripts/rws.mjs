@@ -463,6 +463,8 @@ export async function loadStations() {
       code: l.Code, name: l.Naam || l.Code, lat: p[0], lng: p[1],
       meas: kinds.has("meting") ? 1 : 0,
       fc: kinds.has("verwachting") ? "verwachting" : kinds.has("astronomisch") ? "astronomisch" : null,
+      fcv: kinds.has("verwachting") ? 1 : 0,
+      astro: kinds.has("astronomisch") ? 1 : 0,
     });
   }
   const okMeta = { size: procOf.size }, okLoc = { size: stations.length };
@@ -516,7 +518,7 @@ export async function runWaterUpdate(budgetMs = 8000) {
   const t0 = Date.now();
   const s = store();
   let st = await s.get("stations", { type: "json" });
-  if (!st || Date.now() - Date.parse(st.at) > 7 * 86400e3 || !st.stations?.length) {
+  if (!st || Date.now() - Date.parse(st.at) > 7 * 86400e3 || !st.stations?.length || !("astro" in st.stations[0])) {
     const r = await loadStations();
     st = { at: new Date().toISOString(), stations: r.stations };
     await s.setJSON("stations", st);
@@ -541,71 +543,151 @@ export async function runWaterUpdate(budgetMs = 8000) {
   const stations = st.stations.map((x) => ({ ...x, ...(values[x.code] || {}) }));
   const payload = { generatedAt: new Date().toISOString(), source: "Rijkswaterstaat WaterWebservices", method, count: Object.keys(values).length, stations };
   if (payload.count) await s.setJSON("water", payload);
+  await appendHistory(values);
   await setStatus("water", { completedAt: payload.generatedAt, count: payload.count, stations: stations.length, method, error: errors.length ? errors.join(" | ") : null });
   return { count: payload.count, stations: stations.length, method, errors };
 }
 
-/* ---------------- waterstandsverwachtingen ---------------- */
-// Per meetpunt de RWS-verwachting (of het astronomisch getij) voor de komende 48 uur, per uur.
-function parseSeries(j) {
-  const byHour = new Map();
-  for (const w of j.WaarnemingenLijst || []) {
-    for (const m of w.MetingenLijst || []) {
-      const v = num(m.Meetwaarde?.Waarde_Numeriek);
-      const t = Date.parse(m.Tijdstip);
-      if (v == null || Math.abs(v) >= 2000 || !isFinite(t)) continue;
-      const h = Math.round(t / 3600e3) * 3600e3;          // afronden op het hele uur
-      const prev = byHour.get(h);
-      if (!prev || Math.abs(t - h) <= Math.abs(prev.t - h)) byHour.set(h, { t, v });
-    }
-  }
-  return [...byHour.entries()].sort((a, b) => a[0] - b[0]).map(([h, x]) => [h / 1000, Math.round(x.v)]);
-}
+/* ---------------- reeksen: historie, verwachting, astronomisch getij ---------------- */
+const H48 = 48 * 3600;
+const iso = (d) => d.toISOString().replace(/\.\d{3}Z$/, ".000+00:00");
 
-async function fetchForecast(code, kind) {
-  const begin = new Date(Date.now() - 3600e3), end = new Date(Date.now() + 49 * 3600e3);
-  const iso = (d) => d.toISOString().replace(/\.\d{3}Z$/, ".000+00:00");
+// Volledige resolutie (meestal elke 10 minuten): [[tijd in s, cm], ...]
+function parseSeriesFull(j) {
+  const m = new Map();
+  for (const w of j.WaarnemingenLijst || []) for (const x of w.MetingenLijst || []) {
+    const v = num(x.Meetwaarde?.Waarde_Numeriek), t = Date.parse(x.Tijdstip);
+    if (v == null || Math.abs(v) >= 2000 || !isFinite(t)) continue;
+    m.set(Math.round(t / 1000), Math.round(v));
+  }
+  return [...m.entries()].sort((a, b) => a[0] - b[0]);
+}
+// Per uur (voor de app-brede berekeningen)
+function hourly(pts) {
+  const by = new Map();
+  for (const [t, v] of pts) { const h = Math.round(t / 3600) * 3600; const p = by.get(h); if (!p || Math.abs(t - h) <= Math.abs(p[0] - h)) by.set(h, [t, v]); }
+  return [...by.entries()].sort((a, b) => a[0] - b[0]).map(([h, x]) => [h, x[1]]);
+}
+async function fetchSeries(code, kind, fromH, toH) {
   const body = JSON.stringify({
     Locatie: { Code: code },
     AquoPlusWaarnemingMetadata: { AquoMetadata: { ...META.AquoMetadata, ProcesType: kind } },
-    Periode: { Begindatumtijd: iso(begin), Einddatumtijd: iso(end) },
+    Periode: { Begindatumtijd: iso(new Date(Date.now() + fromH * 3600e3)), Einddatumtijd: iso(new Date(Date.now() + toH * 3600e3)) },
   });
-  return parseSeries(await getJSON(`${DD}/ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen`, { method: "POST", body }, 12000));
+  return parseSeriesFull(await getJSON(`${DD}/ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen`, { method: "POST", body }, 15000));
+}
+const trim = (pts, fromS, toS = Infinity) => pts.filter(([t]) => t >= fromS && t <= toS);
+function mergePts(a = [], b = []) { const m = new Map(a); for (const [t, v] of b) m.set(t, v); return [...m.entries()].sort((x, y) => x[0] - y[0]); }
+
+// Meethistorie opbouwen uit de laatste metingen van elke run (geen extra verzoeken).
+async function appendHistory(values) {
+  const s = store();
+  const hist = (await s.get("hist")) || {};
+  const from = Date.now() / 1000 - H48 - 3600;
+  for (const [code, v] of Object.entries(values)) {
+    const t = Math.round(Date.parse(v.t) / 1000);
+    hist[code] = { ...(hist[code] || {}), pts: trim(mergePts(hist[code]?.pts, [[t, Math.round(v.cm)]]), from) };
+  }
+  await s.setJSON("hist", hist);
 }
 
-export async function runForecastUpdate(budgetMs = 8000) {
-  const t0 = Date.now();
-  const s = store();
-  const st = await s.get("stations", { type: "json" });
-  if (!st?.stations?.length) return { skipped: true, reason: "nog geen meetpunten; eerst waterstanden bijwerken" };
-  const list = st.stations.filter((x) => x.fc);
-  if (!list.length) return { skipped: true, reason: "geen meetpunten met verwachting in de catalogus" };
-
-  const prev = (await s.get("forecast", { type: "json" })) || { series: {}, cursor: 0 };
-  const series = prev.series || {};
-  let cursor = (prev.cursor || 0) % list.length;
-  const order = list.slice(cursor).concat(list.slice(0, cursor));
-  let done = 0, errors = [], debugSample = null;
-
-  await pool(order, 8, async (x) => {
+// Ontbrekende historie aanvullen: per run een beperkt aantal meetpunten, om RWS niet te belasten.
+export async function runHistoryBackfill(budgetMs = 60000, max = 60) {
+  const t0 = Date.now(), s = store();
+  const st = await s.get("stations"), water = await s.get("water");
+  if (!st?.stations?.length) return { skipped: true };
+  const fresh = new Set((water?.stations || []).filter((x) => x.cm != null).map((x) => x.code));
+  const hist = (await s.get("hist")) || {};
+  const nowS = Date.now() / 1000;
+  const todo = st.stations.filter((x) => fresh.has(x.code)).filter((x) => {
+    const h = hist[x.code];
+    const covered = h?.pts?.length && h.pts[0][0] <= nowS - 40 * 3600;
+    const tried = h?.backfillAt && Date.now() - Date.parse(h.backfillAt) < 6 * 3600e3;
+    return !covered && !tried;
+  }).slice(0, max);
+  let ok = 0, errors = [];
+  await pool(todo, 6, async (x) => {
     if (Date.now() - t0 > budgetMs) return;
     try {
-      const pts = await fetchForecast(x.code, x.fc);
-      if (pts.length) { series[x.code] = { kind: x.fc, at: new Date().toISOString(), pts }; if (!debugSample) debugSample = { code: x.code, kind: x.fc, first: pts.slice(0, 3) }; }
+      const pts = await fetchSeries(x.code, "meting", -48, 0);
+      hist[x.code] = { pts: trim(mergePts(pts, hist[x.code]?.pts), nowS - H48 - 3600), backfillAt: new Date().toISOString() };
+      ok++;
+    } catch (e) {
+      hist[x.code] = { ...(hist[x.code] || { pts: [] }), backfillAt: new Date().toISOString() };
+      if (errors.length < 3) errors.push(`${x.code}: ${String(e.message || e).slice(0, 150)}`);
+    }
+  });
+  await s.setJSON("hist", hist);
+  const remaining = st.stations.filter((x) => fresh.has(x.code) && !(hist[x.code]?.pts?.length && hist[x.code].pts[0][0] <= nowS - 40 * 3600)).length;
+  return { aangevuld: ok, nogTeDoen: remaining, errors };
+}
+
+// Verwachting (elk half uur ververst) en astronomisch getij (elke 12 uur) op volle resolutie.
+export async function runForecastUpdate(budgetMs = 120000) {
+  const t0 = Date.now(), s = store();
+  const st = await s.get("stations");
+  if (!st?.stations?.length) return { skipped: true, reason: "nog geen meetpunten" };
+  const fc10 = (await s.get("fc10")) || {}, astro = (await s.get("astro")) || {};
+  const age = (x) => (x?.at ? Date.now() - Date.parse(x.at) : Infinity);
+  const jobs = [];
+  for (const x of st.stations) {
+    if (x.fcv && age(fc10[x.code]) > 25 * 60e3) jobs.push({ x, kind: "verwachting", store: fc10, from: -6, to: 49 });
+    if (x.astro && age(astro[x.code]) > 12 * 3600e3) jobs.push({ x, kind: "astronomisch", store: astro, from: -48, to: 49 });
+  }
+  let done = 0, errors = [], debugSample = null;
+  await pool(jobs, 8, async (j) => {
+    if (Date.now() - t0 > budgetMs) return;
+    try {
+      const pts = await fetchSeries(j.x.code, j.kind, j.from, j.to);
+      if (pts.length) { j.store[j.x.code] = { at: new Date().toISOString(), pts }; if (!debugSample) debugSample = { code: j.x.code, kind: j.kind, n: pts.length, first: pts.slice(0, 2) }; }
+      else j.store[j.x.code] = { at: new Date().toISOString(), pts: j.store[j.x.code]?.pts || [] };
       done++;
     } catch (e) {
       done++;
-      if (errors.length < 5) errors.push(`${x.code}: ${String(e.message || e).slice(0, 200)}`);
+      if (errors.length < 5) errors.push(`${j.x.code} (${j.kind}): ${String(e.message || e).slice(0, 160)}`);
     }
   });
-
-  // verlopen reeksen opruimen
   const nowS = Date.now() / 1000;
-  for (const [k, v] of Object.entries(series)) if (!v.pts?.length || v.pts[v.pts.length - 1][0] < nowS) delete series[k];
+  for (const m of [fc10, astro]) for (const [k, v] of Object.entries(m)) { v.pts = trim(v.pts || [], nowS - H48 - 3600); if (!v.pts.length || v.pts[v.pts.length - 1][0] < nowS) delete m[k]; }
+  await s.setJSON("fc10", fc10);
+  await s.setJSON("astro", astro);
 
-  const payload = { generatedAt: new Date().toISOString(), source: "Rijkswaterstaat WaterWebservices (verwachting / astronomisch getij)", cursor: (cursor + done) % list.length, count: Object.keys(series).length, series };
+  // Voor de app: per meetpunt de beste toekomstreeks per uur (verwachting, anders astronomisch).
+  const series = {};
+  for (const x of st.stations) {
+    const f = fc10[x.code], a = astro[x.code];
+    if (f?.pts?.length) series[x.code] = { kind: "verwachting", at: f.at, pts: hourly(trim(f.pts, nowS - 3600)) };
+    else if (a?.pts?.length) series[x.code] = { kind: "astronomisch", at: a.at, pts: hourly(trim(a.pts, nowS - 3600)) };
+  }
+  const payload = { generatedAt: new Date().toISOString(), source: "Rijkswaterstaat WaterWebservices (verwachting / astronomisch getij)", count: Object.keys(series).length, series };
   await s.setJSON("forecast", payload);
-  if (debugSample || errors.length) await s.setJSON("debug-forecast", { at: payload.generatedAt, sample: debugSample, errors, stationsWithForecast: list.length });
-  await setStatus("forecast", { completedAt: payload.generatedAt, processed: done, series: payload.count, of: list.length, error: errors.length ? errors.join(" | ") : null });
-  return { processed: done, series: payload.count, of: list.length, errors };
+  await s.setJSON("debug-forecast", { at: payload.generatedAt, sample: debugSample, errors, jobs: jobs.length });
+  await setStatus("forecast", { completedAt: payload.generatedAt, processed: done, of: jobs.length, series: payload.count, error: errors.length ? errors.join(" | ") : null });
+  return { verwerkt: done, van: jobs.length, reeksen: payload.count, errors };
+}
+
+// Per meetpunt één klein bestand voor de grafiek in de app (wordt pas geladen bij aantikken).
+export async function writeSeriesFiles() {
+  const s = store();
+  const st = await s.get("stations"), water = await s.get("water");
+  const hist = (await s.get("hist")) || {}, fc10 = (await s.get("fc10")) || {}, astro = (await s.get("astro")) || {};
+  const latest = new Map((water?.stations || []).map((x) => [x.code, x]));
+  const dir = path.join(DATA_DIR, "series");
+  await fs.rm(dir, { recursive: true, force: true });
+  await fs.mkdir(dir, { recursive: true });
+  let n = 0;
+  for (const x of st?.stations || []) {
+    const h = hist[x.code]?.pts || [], f = fc10[x.code], a = astro[x.code];
+    if (!h.length && !f?.pts?.length && !a?.pts?.length) continue;
+    const l = latest.get(x.code);
+    const out = {
+      code: x.code, name: x.name, generatedAt: new Date().toISOString(),
+      meting: { lastAt: l?.t || null, pts: h },
+      verwachting: f ? { fetchedAt: f.at, pts: f.pts } : null,
+      astronomisch: a ? { fetchedAt: a.at, pts: a.pts } : null,
+    };
+    await fs.writeFile(path.join(dir, x.code.replace(/[^a-z0-9._-]/gi, "_") + ".json"), JSON.stringify(out));
+    n++;
+  }
+  return { bestanden: n };
 }

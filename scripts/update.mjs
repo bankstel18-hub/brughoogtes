@@ -2,7 +2,7 @@
 //   node scripts/update.mjs <datamap> [bruggen] [--force-bruggen]
 // Waterstanden en verwachtingen worden altijd bijgewerkt; bruggen hooguit eens per ~20 uur
 // (of altijd met --force-bruggen).
-import { setDataDir, runWaterUpdate, runForecastUpdate, runBridgeJob, runLockJob, getStatus, store } from "./rws.mjs";
+import { setDataDir, runWaterUpdate, runForecastUpdate, runHistoryBackfill, writeSeriesFiles, runBridgeJob, runLockJob, getStatus, store } from "./rws.mjs";
 
 const [dir = "data", ...flags] = process.argv.slice(2);
 setDataDir(dir);
@@ -21,14 +21,8 @@ async function step(name, fn) {
 }
 
 await step("waterstanden", () => runWaterUpdate(120000));
-await step("verwachtingen", async () => {
-  // Alle meetpunten in één keer; zonder tijdslimiet van een serverfunctie.
-  const st = await store().get("stations");
-  const n = st?.stations?.filter((x) => x.fc).length || 0;
-  let r, rounds = 0;
-  do { r = await runForecastUpdate(150000); rounds++; } while (rounds < 3 && r.processed && r.processed < n);
-  return r;
-});
+await step("historie aanvullen", () => runHistoryBackfill(90000, 60));
+await step("verwachtingen", () => runForecastUpdate(150000));
 await step("bruggen", async () => {
   let r = await runBridgeJob(240000, { force });
   while (r && r.done === false) r = await runBridgeJob(240000);
@@ -40,6 +34,8 @@ await step("sluizen", async () => {
   while (r && r.done === false) r = await runLockJob(240000);
   return r;
 });
+
+await step("grafiekbestanden", () => writeSeriesFiles());
 
 // Samenvatting van de sluisdata in het logboek.
 const lk = await store().get("locks");
