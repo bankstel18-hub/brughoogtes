@@ -32,6 +32,11 @@
       <div class="boat"><input type="number" id="boatH" min="0" max="25" step="0.05" value="2.50" inputmode="decimal"><span>m</span></div>
       <input type="range" id="boatR" min="0.5" max="12" step="0.05" value="2.50" aria-label="Kruiphoogte">
       <div class="small"><label for="margin">Veiligheidsmarge</label> <input type="number" id="margin" min="0" max="2" step="0.05" value="0.10" inputmode="decimal"> m</div>
+      <div class="dims">
+        <label><span class="lbl">Lengte</span><span class="dimrow"><input type="number" id="boatL" min="0" max="250" step="0.1" value="10.0" inputmode="decimal"> m</span></label>
+        <label><span class="lbl">Breedte</span><span class="dimrow"><input type="number" id="boatB" min="0" max="40" step="0.05" value="3.50" inputmode="decimal"> m</span></label>
+        <label><span class="lbl">Diepgang</span><span class="dimrow"><input type="number" id="boatT" min="0" max="10" step="0.05" value="1.20" inputmode="decimal"> m</span></label>
+      </div>
       <label class="check"><input type="checkbox" id="useWater" checked> Corrigeer voor waterstand (grote wateren)</label>
       <div class="when">
         <label class="lbl" for="when">Vaartijdstip</label>
@@ -47,7 +52,7 @@
         <button class="chip" data-type="fixed" aria-pressed="false">Vast</button>
         <button class="chip" data-type="movable" aria-pressed="false">Beweegbaar</button>
       </div>
-      <label class="check"><input type="checkbox" id="onlyLow"> Alleen bruggen die te laag zijn voor mij</label>
+      <label class="check"><input type="checkbox" id="onlyLow"> Alleen knelpunten voor mijn schip</label>
       <label class="check"><input type="checkbox" id="showStations" checked> Toon meetpunten waterstand</label>
       <label class="check"><input type="checkbox" id="showLocks" checked> Toon sluizen</label>
       <input type="search" id="search" placeholder="Zoek brug, sluis of plaats…" autocomplete="off" aria-label="Zoek brug, sluis of plaats">
@@ -58,7 +63,7 @@
         <span><i class="dot" style="background:var(--unk)"></i>Hoogte onbekend</span>
         <span><i class="sq"></i>Meetpunt waterstand</span>
         <span><i class="ring"></i>Gecorrigeerd voor waterstand</span>
-        <span><i class="lk"></i>Sluis</span>
+        <span><i class="lk"></i>Sluis (kleur: past of niet)</span>
       </div>
     </section>
 
