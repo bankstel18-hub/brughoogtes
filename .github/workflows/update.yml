@@ -1,4 +1,4 @@
-# Haalt elke 10 minuten de waterstanden en verwachtingen op (bruggen eens per dag)
+# Haalt elke 10 minuten de waterstanden en verwachtingen op (bruggen en sluizen eens per dag)
 # en zet de app met de nieuwe data op GitHub Pages.
 name: Data bijwerken en publiceren
 
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       force_bruggen:
-        description: "Bruggen nu opnieuw ophalen"
+        description: "Bruggen en sluizen nu opnieuw ophalen"
         type: boolean
         default: false
       zoek:
@@ -47,7 +47,7 @@ jobs:
         run: |
           mkdir -p _site/data
           cp -r public/. _site/
-          for f in bridges stations forecast water status debug-bridges debug-water debug-forecast; do
+          for f in bridges locks stations forecast water status debug-bridges debug-locks debug-water debug-forecast; do
             curl -sfL --max-time 60 "$SITE/data/$f.json" -o "_site/data/$f.json" || rm -f "_site/data/$f.json"
           done
           ls -la _site/data
@@ -59,7 +59,7 @@ jobs:
 
       - name: Tijdelijke bestanden opruimen
         if: always()
-        run: rm -f _site/data/bridgejob.json _site/data/bj__*.json
+        run: rm -f _site/data/bridgejob.json _site/data/bj__*.json _site/data/lockjob.json _site/data/lj__*.json
 
       - uses: actions/upload-pages-artifact@v3
         if: always()

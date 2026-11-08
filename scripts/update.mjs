@@ -2,7 +2,7 @@
 //   node scripts/update.mjs <datamap> [bruggen] [--force-bruggen]
 // Waterstanden en verwachtingen worden altijd bijgewerkt; bruggen hooguit eens per ~20 uur
 // (of altijd met --force-bruggen).
-import { setDataDir, runWaterUpdate, runForecastUpdate, runBridgeJob, getStatus, store } from "./rws.mjs";
+import { setDataDir, runWaterUpdate, runForecastUpdate, runBridgeJob, runLockJob, getStatus, store } from "./rws.mjs";
 
 const [dir = "data", ...flags] = process.argv.slice(2);
 setDataDir(dir);
@@ -34,6 +34,26 @@ await step("bruggen", async () => {
   while (r && r.done === false) r = await runBridgeJob(240000);
   return r;
 });
+
+await step("sluizen", async () => {
+  let r = await runLockJob(240000, { force });
+  while (r && r.done === false) r = await runLockJob(240000);
+  return r;
+});
+
+// Samenvatting van de sluisdata in het logboek.
+const lk = await store().get("locks");
+const dbgL = await store().get("debug-locks");
+if (lk?.locks?.length) {
+  const L = lk.locks, n = (f) => L.filter(f).length;
+  console.log("sluisdata:", JSON.stringify({ totaal: L.length, metKolken: n((x) => x.chambers.length), kolken: L.reduce((t, x) => t + x.chambers.length, 0),
+    metLengte: n((x) => x.chambers.some((c) => c.length)), metBreedte: n((x) => x.chambers.some((c) => c.width)), metDrempel: n((x) => x.chambers.some((c) => c.sill)), metHoogte: n((x) => x.chambers.some((c) => c.height)) }));
+  for (const l of dbgL?.layers || []) {
+    console.log(`laag ${l.role} (${l.name || l.source}): velden=${(l.fields || []).join(", ")}`);
+    console.log(`  voorbeeld: ${JSON.stringify((l.samples || [l.sample])[0] || {}).slice(0, 900)}`);
+  }
+  console.log("voorbeeldsluis:", JSON.stringify((L.find((x) => x.chambers.length > 1) || L[0]), (k, v) => (k === "a" ? undefined : v)).slice(0, 900));
+}
 
 // Samenvatting van de brugdata in het logboek (voor onderhoud en controle).
 const br = await store().get("bridges");

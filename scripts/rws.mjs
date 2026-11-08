@@ -72,21 +72,32 @@ function geomPoint(g) {
   return [+(s[1] / pts.length).toFixed(6), +(s[0] / pts.length).toFixed(6)];
 }
 
-// Stap 1 van de bruggen-taak: bron kiezen, lagen vinden en de pagina's plannen.
+// FIS-taken (bruggen, sluizen): bron kiezen, lagen vinden en de pagina's plannen.
 // Bronnen in volgorde: ArcGIS FeatureServer, ArcGIS MapServer, FIS-dataservice van vaarweginformatie.nl.
 export const FIS_SOURCES = [FIS, FIS.replace(/FeatureServer$/, "MapServer")];
 export const FIS_DS = "https://www.vaarweginformatie.nl/wfswms/dataservice/1.4";
 
-async function planArcgis(base) {
+// Welke FIS-lagen bij welke taak horen.
+const JOBS = {
+  bridges: {
+    label: "bruggen", jobKey: "bridgejob", prefix: "bj/", out: "bridges", debugKey: "debug-bridges",
+    roles: [{ role: "bridge", re: /bridge|brug/i, ds: "bridge" }, { role: "opening", re: /opening/i, ds: "opening" }],
+    build: (r) => assemble(r.bridge || [], r.opening || []),
+  },
+  locks: {
+    label: "sluizen", jobKey: "lockjob", prefix: "lj/", out: "locks", debugKey: "debug-locks",
+    roles: [{ role: "lock", re: /^lock\b|^lock\s|sluis(?!kolk)/i, ds: "lock" }, { role: "chamber", re: /chamber|kolk/i, ds: "chamber" }],
+    build: (r) => assembleLocks(r.lock || [], r.chamber || []),
+  },
+};
+
+async function planArcgis(base, cfg) {
   const svc = await getJSON(`${base}?f=json`);
   const layers = (svc.layers || []).concat(svc.tables || []);
-  const pickLayer = (re) => layers.filter((l) => re.test(l.name) && !(l.subLayerIds && l.subLayerIds.length))
+  const pickLayer = (re) => layers.filter((l) => re.test(l.name) && !(l.subLayerIds && l.subLayerIds.length) && !/subchamber/i.test(l.name))
     .sort((a, b) => (/punt|point/i.test(b.name) ? 1 : 0) - (/punt|point/i.test(a.name) ? 1 : 0))[0];
-  const chosen = [
-    { role: "bridge", layer: pickLayer(/bridge|brug/i) },
-    { role: "opening", layer: pickLayer(/opening/i) },
-  ].filter((x) => x.layer);
-  if (!chosen.length) throw new Error("Geen brug- of openingenlaag gevonden. Lagen: " + layers.map((l) => l.name).join(", "));
+  const chosen = cfg.roles.map((r) => ({ role: r.role, layer: pickLayer(r.re) })).filter((x) => x.layer);
+  if (!chosen.length) throw new Error(`Geen lagen voor ${cfg.label} gevonden. Lagen: ` + layers.map((l) => l.name).join(", "));
   const tasks = [], meta = [];
   for (const { role, layer } of chosen) {
     const info = await getJSON(`${base}/${layer.id}?f=json`);
@@ -106,32 +117,32 @@ async function planArcgis(base) {
   return { meta, tasks };
 }
 
-async function planDataservice() {
+async function planDataservice(cfg) {
   const g = await getJSON(`${FIS_DS}/geogeneration`);
   const gen = g.GeoGeneration ?? g.geoGeneration ?? g.Result?.GeoGeneration ?? g;
   if (gen == null || typeof gen === "object") throw new Error("Geen geogeneratie in antwoord: " + JSON.stringify(g).slice(0, 200));
   const tasks = [], meta = [];
-  for (const [role, kind] of [["bridge", "bridge"], ["opening", "opening"]]) {
-    const first = await getJSON(`${FIS_DS}/${gen}/${kind}?offset=0&count=1`);
+  for (const { role, ds } of cfg.roles) {
+    const first = await getJSON(`${FIS_DS}/${gen}/${ds}?offset=0&count=1`);
     const total = first.TotalCount ?? first.totalCount ?? 0;
     meta.push({ source: FIS_DS, role, generation: gen, total, sample: (first.Result || first.result || [])[0] });
-    for (let off = 0; off < total; off += 500) tasks.push({ kind: "ds", role, url: `${FIS_DS}/${gen}/${kind}`, offset: off, n: 500 });
+    for (let off = 0; off < total; off += 500) tasks.push({ kind: "ds", role, url: `${FIS_DS}/${gen}/${ds}`, offset: off, n: 500 });
   }
-  if (!tasks.length) throw new Error("Dataservice gaf geen bruggen");
+  if (!tasks.length) throw new Error(`Dataservice gaf geen ${cfg.label}`);
   return { meta, tasks };
 }
 
-async function planBridgeJob() {
+async function planJob(cfg) {
   const errors = [];
   for (const base of FIS_SOURCES) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      try { const r = await planArcgis(base); return finishPlan(r, errors); }
+      try { const r = await planArcgis(base, cfg); return finishPlan(r, errors); }
       catch (e) { errors.push(`${base.split("/").pop()}: ${String(e.message || e).slice(0, 160)}`); }
     }
   }
-  try { const r = await planDataservice(); return finishPlan(r, errors); }
+  try { const r = await planDataservice(cfg); return finishPlan(r, errors); }
   catch (e) { errors.push(`dataservice: ${String(e.message || e).slice(0, 160)}`); }
-  throw new Error("Geen enkele brugbron bereikbaar. " + errors.join(" | "));
+  throw new Error(`Geen enkele bron voor ${cfg.label} bereikbaar. ` + errors.join(" | "));
 }
 function finishPlan({ meta, tasks }, errors) {
   return { started: new Date().toISOString(), meta, fallbackErrors: errors, tasks: tasks.map((t, i) => ({ ...t, i, done: false })) };
@@ -142,7 +153,7 @@ function wktPoint(w) {
   return m ? [+(+m[2]).toFixed(6), +(+m[1]).toFixed(6)] : null;
 }
 
-async function runBridgeTask(t) {
+async function runTask(t) {
   if (t.kind === "ds") {
     const j = await getJSON(`${t.url}?offset=${t.offset}&count=${t.n}`, {}, 30000);
     return (j.Result || j.result || []).map((r) => {
@@ -167,19 +178,19 @@ async function runBridgeTask(t) {
   return (j.features || []).map((f) => ({ a: slim(f.attributes), p: geomPoint(f.geometry) }));
 }
 
-// Voert de bruggen-taak uit binnen een tijdsbudget; hervat bij de volgende aanroep.
-export async function runBridgeJob(budgetMs = 8000, { force = false } = {}) {
+// Voert een FIS-taak (bruggen of sluizen) uit binnen een tijdsbudget; hervat bij de volgende aanroep.
+async function runFisJob(cfg, budgetMs, { force = false } = {}) {
   const t0 = Date.now();
   const s = store();
-  let job = await s.get("bridgejob", { type: "json" });
+  let job = await s.get(cfg.jobKey, { type: "json" });
   const status = await getStatus();
-  const last = status.bridges?.completedAt ? Date.parse(status.bridges.completedAt) : 0;
+  const last = status[cfg.out]?.completedAt ? Date.parse(status[cfg.out].completedAt) : 0;
 
   if (!job) {
-    if (!force && Date.now() - last < 20 * 3600e3) return { skipped: true, reason: "bruggen zijn minder dan 20 uur oud" };
-    job = await planBridgeJob();
-    await s.setJSON("bridgejob", job);
-    await setStatus("bridges", { running: true, startedAt: job.started, error: null });
+    if (!force && Date.now() - last < 20 * 3600e3) return { skipped: true, reason: `${cfg.label} zijn minder dan 20 uur oud` };
+    job = await planJob(cfg);
+    await s.setJSON(cfg.jobKey, job);
+    await setStatus(cfg.out, { running: true, startedAt: job.started, error: null });
   }
 
   try {
@@ -187,42 +198,40 @@ export async function runBridgeJob(budgetMs = 8000, { force = false } = {}) {
       const todo = job.tasks.filter((t) => !t.done).slice(0, 4);
       if (!todo.length) break;
       await Promise.all(todo.map(async (t) => {
-        const feats = await runBridgeTask(t);
-        await s.setJSON(`bj/${t.i}`, feats);
+        const feats = await runTask(t);
+        await s.setJSON(`${cfg.prefix}${t.i}`, feats);
         t.done = true;
       }));
-      await s.setJSON("bridgejob", job);
+      await s.setJSON(cfg.jobKey, job);
     }
   } catch (e) {
-    await setStatus("bridges", { error: String(e.message || e), errorAt: new Date().toISOString() });
+    await setStatus(cfg.out, { error: String(e.message || e), errorAt: new Date().toISOString() });
     throw e;
   }
 
   const remaining = job.tasks.filter((t) => !t.done).length;
   if (remaining) return { done: false, progress: `${job.tasks.length - remaining}/${job.tasks.length}` };
 
-  // Alles binnen: samenvoegen.
-  const byRole = { bridge: [], opening: [] };
+  const byRole = {};
   for (const t of job.tasks) {
-    const feats = (await s.get(`bj/${t.i}`, { type: "json" })) || [];
-    byRole[t.role].push(...feats);
+    const feats = (await s.get(`${cfg.prefix}${t.i}`, { type: "json" })) || [];
+    (byRole[t.role] ||= []).push(...feats);
   }
-  const bridges = assemble(byRole.bridge, byRole.opening);
-  const payload = { generatedAt: new Date().toISOString(), source: "Rijkswaterstaat FIS (CC-0)", count: bridges.length, bridges };
-  await s.setJSON("bridges", payload);
-
-  const debug = {
-    at: payload.generatedAt,
-    fallbackErrors: job.fallbackErrors,
-    layers: job.meta.map((m) => ({ ...m, samples: (m.role === "bridge" ? byRole.bridge : byRole.opening).slice(0, 4).map((f) => f.a) })),
-  };
-  await s.setJSON("debug-bridges", debug);
-
-  for (const t of job.tasks) await s.delete(`bj/${t.i}`);
-  await s.delete("bridgejob");
-  await setStatus("bridges", { running: false, completedAt: payload.generatedAt, count: bridges.length, error: null });
-  return { done: true, count: bridges.length };
+  const items = cfg.build(byRole);
+  const payload = { generatedAt: new Date().toISOString(), source: "Rijkswaterstaat FIS (CC-0)", count: items.length, [cfg.out]: items };
+  await s.setJSON(cfg.out, payload);
+  await s.setJSON(cfg.debugKey, {
+    at: payload.generatedAt, fallbackErrors: job.fallbackErrors,
+    layers: job.meta.map((m) => ({ ...m, samples: (byRole[m.role] || []).slice(0, 4).map((f) => f.a) })),
+  });
+  for (const t of job.tasks) await s.delete(`${cfg.prefix}${t.i}`);
+  await s.delete(cfg.jobKey);
+  await setStatus(cfg.out, { running: false, completedAt: payload.generatedAt, count: items.length, error: null });
+  return { done: true, count: items.length };
 }
+
+export const runBridgeJob = (budgetMs = 8000, opts) => runFisJob(JOBS.bridges, budgetMs, opts);
+export const runLockJob = (budgetMs = 8000, opts) => runFisJob(JOBS.locks, budgetMs, opts);
 
 /* --- veldherkenning: robuust tegen schemawijzigingen --- */
 function num(v) {
@@ -330,6 +339,47 @@ function assemble(bridgeFeats, openFeats) {
     res.push(normalize(f.a, f.p, null, "bridge"));
   }
   return res;
+}
+
+/* --- sluizen: sluis met kolken --- */
+function pickNum(a, regs, exclude) {
+  for (const re of regs) for (const k of Object.keys(a || {})) {
+    if (re.test(k) && !(exclude && exclude.test(k))) { const n = num(a[k]); if (n != null && n > 0 && n < 2000) return +n.toFixed(2); }
+  }
+  return null;
+}
+function assembleLocks(lockFeats, chamberFeats) {
+  const idOf = (a) => a.id ?? a.Id ?? a.ID;
+  const byId = new Map(lockFeats.map((f) => [String(idOf(f.a)), { f, chambers: [] }]));
+  const linkKey = chamberFeats.length ? Object.keys(chamberFeats[0].a).find((k) => /^(parentid|lockid|lock_id)$/i.test(k)) : null;
+  const orphans = [];
+  for (const c of chamberFeats) {
+    const a = c.a;
+    const ch = {
+      name: a.name || a.Name || (a.number != null ? `Kolk ${a.number}` : "Kolk"),
+      length: pickNum(a, [/^usablelength$|^length$|lengte/i, /length/i], /convoy|width/i),
+      width: pickNum(a, [/^usablewidth$|^width$|breedte/i, /width/i], /convoy/i),
+      sill: pickNum(a, [/silldepth|drempeldiepte|drempel/i, /sill|depth|diepte/i]),
+      height: pickNum(a, [/clearanceheight|heightclosed|^height$|hoogte|doorvaarthoogte/i]),
+    };
+    const parent = linkKey ? byId.get(String(a[linkKey])) : null;
+    if (parent) parent.chambers.push(ch); else orphans.push({ c, ch });
+  }
+  const out = [];
+  for (const { f, chambers } of byId.values()) {
+    if (!f.p) continue;
+    const a = f.a;
+    out.push({
+      id: idOf(a), lat: f.p[0], lng: f.p[1],
+      name: a.name || a.Name || "Sluis zonder naam",
+      place: a.city || a.City || a.plaats || "",
+      phone: a.phonenumber || a.PhoneNumber || "",
+      chambers: chambers.sort((x, y) => String(x.name).localeCompare(String(y.name), "nl")),
+      a,
+    });
+  }
+  for (const { c, ch } of orphans) if (c.p) out.push({ id: idOf(c.a), lat: c.p[0], lng: c.p[1], name: ch.name, place: c.a.city || "", phone: "", chambers: [ch], a: c.a });
+  return out;
 }
 
 /* ---------------- waterstanden ---------------- */
