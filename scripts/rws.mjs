@@ -114,6 +114,7 @@ async function planArcgis(base, cfg) {
     }
   }
   if (!tasks.length) throw new Error("Lagen gevonden maar zonder objecten");
+  meta.push({ role: "_lagen", all: layers.map((l) => `${l.id}:${l.name}`) });
   return { meta, tasks };
 }
 

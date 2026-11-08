@@ -49,6 +49,8 @@ if (lk?.locks?.length) {
   console.log("sluisdata:", JSON.stringify({ totaal: L.length, metKolken: n((x) => x.chambers.length), kolken: L.reduce((t, x) => t + x.chambers.length, 0),
     metLengte: n((x) => x.chambers.some((c) => c.length)), metBreedte: n((x) => x.chambers.some((c) => c.width)), metDrempel: n((x) => x.chambers.some((c) => c.sill)), metHoogte: n((x) => x.chambers.some((c) => c.height)) }));
   console.log("koppeling kolken:", JSON.stringify(dbgL?.buildStats));
+  console.log("alle lagen:", JSON.stringify((dbgL?.layers || []).find((l) => l.role === "_lagen")?.all));
+  console.log("gekozen:", JSON.stringify((dbgL?.layers || []).filter((l) => l.role !== "_lagen").map((l) => [l.role, l.id, l.name, l.max, l.pag])));
   for (const l of dbgL?.layers || []) {
     console.log(`laag ${l.role} (${l.name || l.source}): velden=${(l.fields || []).join(", ")}`);
     console.log(`  voorbeeld: ${JSON.stringify((l.samples || [l.sample])[0] || {}).slice(0, 900)}`);
