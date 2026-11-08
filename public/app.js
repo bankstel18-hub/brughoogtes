@@ -458,6 +458,12 @@ map.on("zoomend", () => {
 map.on("moveend", updateView);
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", draw);
 
-if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+if ("serviceWorker" in navigator) {
+  // Bij een nieuwe versie van de app: één keer automatisch herladen (niet bij de allereerste installatie).
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+  addEventListener("load", () => navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {}));
+}
 init();
 })();
