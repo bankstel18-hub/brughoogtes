@@ -125,6 +125,8 @@ function state(b) {
   if (b.movable) return o == null || o >= n ? "wait" : "bad";
   return c == null ? "unk" : "bad";
 }
+// Popups op de telefoon: niet hoger dan het scherm toelaat (dan scrollbaar), en vrij van de knoppen.
+const popOpts = (w) => ({ maxWidth: w, maxHeight: innerWidth <= 760 ? Math.round(innerHeight * 0.58) : undefined, autoPanPaddingTopLeft: [12, 64], autoPanPaddingBottomRight: [12, 24] });
 const colorOf = (s) => css({ ok: "--ok", wait: "--wait", bad: "--bad", unk: "--unk" }[s]);
 
 /* ---------- data laden ---------- */
@@ -206,6 +208,50 @@ function minAhead(b) {
   return best;
 }
 
+let activeSpark = null, pendingRedraw = false;
+function sparkReadout(s, b, h) {
+  const lv = levelAt(s, h);
+  const when = h === 0 ? "Nu" : new Date(Date.now() + h * 3600e3).toLocaleString("nl-NL", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  if (!lv) return `<b>${when}</b>: geen waterstand beschikbaar`;
+  const c = b ? clearanceFor(b, lv.cm) : null;
+  return `<b>${when}</b>: ${signed(lv.cm)} cm NAP (${kindTxt(lv.kind)})${b && c != null && (b.mhw != null || b.underNAP != null) ? ` · doorvaarthoogte <b>${fmt(c)} m</b>` : ""}`;
+}
+// Slepen in de grafiek: tijdstip kiezen zonder de popup te sluiten.
+function bindSpark(root) {
+  const svg = root.querySelector(".spark");
+  if (!svg || !activeSpark) return;
+  const ctx = activeSpark;
+  const setH = (h) => {
+    h = Math.max(0, Math.min(48, h));
+    if (h === offsetH() && svg.dataset.init) return;
+    svg.dataset.init = "1";
+    $("when").value = h; updateWhen();
+    const tSel = Date.now() / 1000 + h * 3600, xs = ctx.x(tSel);
+    const lv = levelAt(ctx.s, h);
+    svg.querySelector(".selline").setAttribute("x1", xs); svg.querySelector(".selline").setAttribute("x2", xs);
+    const pt = svg.querySelector(".selpt"); pt.setAttribute("cx", xs); pt.setAttribute("cy", lv ? ctx.y(lv.cm) : -10);
+    svg.setAttribute("aria-valuenow", h);
+    root.querySelector(".sparkread").innerHTML = sparkReadout(ctx.s, ctx.b, h);
+    pendingRedraw = true;
+  };
+  const fromEvent = (e) => {
+    const r = svg.getBoundingClientRect();
+    const vx = ((e.clientX - r.left) / r.width) * ctx.W;
+    const t = ctx.t0 + ((vx - ctx.L) / (ctx.W - ctx.L - ctx.R)) * (ctx.t1 - ctx.t0);
+    return Math.round((t - Date.now() / 1000) / 3600);
+  };
+  let dragging = false;
+  const stop = (e) => { e.stopPropagation(); };
+  ["mousedown", "touchstart", "dblclick", "wheel"].forEach((ev) => svg.addEventListener(ev, stop, { passive: true }));
+  svg.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); dragging = true; svg.setPointerCapture(e.pointerId); setH(fromEvent(e)); });
+  svg.addEventListener("pointermove", (e) => { if (dragging) { e.preventDefault(); setH(fromEvent(e)); } });
+  const end = (e) => { if (dragging) { dragging = false; try { svg.releasePointerCapture(e.pointerId); } catch {} } };
+  svg.addEventListener("pointerup", end); svg.addEventListener("pointercancel", end);
+  svg.addEventListener("keydown", (e) => {
+    const step = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1, PageUp: 6, PageDown: -6 }[e.key];
+    if (step) { e.preventDefault(); setH(offsetH() + step); }
+  });
+}
 function sparkline(s, b) {
   const fc = forecast[s.code];
   const now = Date.now() / 1000, t0 = now - 2 * 3600, t1 = now + 48 * 3600;
@@ -225,15 +271,20 @@ function sparkline(s, b) {
     const t = now + h * 3600, d = new Date(t * 1000);
     return `<line x1="${x(t)}" x2="${x(t)}" y1="${T}" y2="${H - B}" stroke="#d5e0e8" stroke-width="1"/><text x="${x(t)}" y="${H - 5}" text-anchor="${h === 48 ? "end" : "middle"}">${h === 0 ? "nu" : d.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}</text>`;
   }).join("");
-  return `<svg class="spark" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Waterstand en verwachting komende 48 uur">
+  activeSpark = { s, b, t0, t1, now, W, L, R, T, H, B, x, y, fc };
+  const selV = levelAt(s)?.cm;
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" width="100%" role="slider" tabindex="0" aria-label="Kies een tijdstip: sleep door de grafiek of gebruik de pijltjestoetsen" aria-valuemin="0" aria-valuemax="48" aria-valuenow="${offsetH()}">
     ${ticks}
     <text x="${L - 4}" y="${y(hi) + 3}" text-anchor="end">${signed(Math.round(hi))}</text>
     <text x="${L - 4}" y="${y(lo) + 3}" text-anchor="end">${signed(Math.round(lo))}</text>
     ${path ? `<path d="${path}" fill="none" stroke="${water}" stroke-width="2" stroke-dasharray="${fc?.kind === "astronomisch" ? "4 3" : "0"}"/>` : ""}
     ${meas ? `<circle cx="${x(Math.max(t0, meas[0]))}" cy="${y(meas[1])}" r="3.5" fill="#0f2a3d"/>` : ""}
-    <line x1="${x(tSel)}" x2="${x(tSel)}" y1="${T}" y2="${H - B}" stroke="${css("--wait")}" stroke-width="2"/>
+    <line class="selline" x1="${x(tSel)}" x2="${x(tSel)}" y1="${T}" y2="${H - B}" stroke="${css("--wait")}" stroke-width="2.5"/>
+    <circle class="selpt" cx="${x(tSel)}" cy="${selV != null ? y(selV) : -10}" r="4.5" fill="${css("--wait")}" stroke="#fff" stroke-width="1.5"/>
+    <rect class="spark-hit" x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent"/>
   </svg>
-  <div class="note">Lijn: ${fc ? (fc.kind === "astronomisch" ? "astronomisch getij (zonder wind en afvoer)" : "verwachting Rijkswaterstaat") : "geen verwachting beschikbaar"} · stip: laatste meting · oranje: gekozen vaartijdstip · cm t.o.v. NAP</div>`;
+  <div class="sparkread">${sparkReadout(s, b, offsetH())}</div>
+  <div class="note">${fc ? "Sleep door de grafiek om een tijdstip te kiezen. " : ""}Lijn: ${fc ? (fc.kind === "astronomisch" ? "astronomisch getij (zonder wind en afvoer)" : "verwachting Rijkswaterstaat") : "geen verwachting beschikbaar"} · stip: laatste meting · oranje: gekozen tijdstip · cm t.o.v. NAP</div>`;
 }
 
 function popupBridge(b) {
@@ -334,7 +385,7 @@ function draw() {
         color: usingCur ? water : "#0f2a3d", weight: usingCur ? 2.5 : b.movable ? 1.5 : 1,
         fillColor: colorOf(s), fillOpacity: 0.95,
       });
-      m.bindPopup(() => popupBridge(b), { maxWidth: 330 });
+      m.bindPopup(() => popupBridge(b), popOpts(330));
       m.addTo(bridgeLayer);
       b._m = m;
     }
@@ -351,7 +402,7 @@ function draw() {
         icon: L.divIcon({ className: "", html: `<i class="sq" style="display:block;width:11px;height:11px"></i>`, iconSize: [11, 11] }),
         keyboard: false, title: st.name,
       });
-      m.bindPopup(() => popupStation(st));
+      m.bindPopup(() => popupStation(st), popOpts(320));
       m.addTo(stationLayer);
     }
   }
@@ -364,7 +415,7 @@ function draw() {
       if (q && !(l.name.toLowerCase().includes(q) || (l.place || "").toLowerCase().includes(q))) continue;
       const st = lockState(l);
       if ($("onlyLow").checked && st !== "bad") continue;
-      L.marker([l.lat, l.lng], { icon: iconFor(st), keyboard: false, title: l.name }).bindPopup(() => popupLock(l), { maxWidth: 360 }).addTo(lockLayer);
+      L.marker([l.lat, l.lng], { icon: iconFor(st), keyboard: false, title: l.name }).bindPopup(() => popupLock(l), popOpts(360)).addTo(lockLayer);
     }
   }
   updateView();
@@ -456,6 +507,17 @@ map.on("zoomend", () => {
   for (const b of bridges) if (b._m) b._m.setRadius(radiusFor(b));
 });
 map.on("moveend", updateView);
+map.on("popupopen", (e) => {
+  bindSpark(e.popup.getElement());
+  e.popup.off("contentupdate").on("contentupdate", () => bindSpark(e.popup.getElement()));
+  const p = $("panel");
+  if (innerWidth <= 760 && !p.classList.contains("min")) {
+    p.classList.add("min");
+    $("toggle").textContent = "Uitklappen"; $("toggle").setAttribute("aria-expanded", "false");
+    setTimeout(() => { map.invalidateSize(); const ll = e.popup.getLatLng(); if (ll) map.panTo(ll, { animate: true }); setTimeout(() => e.popup.update(), 260); }, 60);
+  }
+});
+map.on("popupclose", () => { if (pendingRedraw) { pendingRedraw = false; setTimeout(() => { linkStations(); draw(); }, 0); } });
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", draw);
 
 if ("serviceWorker" in navigator) {
