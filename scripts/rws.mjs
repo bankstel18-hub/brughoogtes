@@ -86,7 +86,8 @@ const JOBS = {
   },
   locks: {
     label: "sluizen", jobKey: "lockjob", prefix: "lj/", out: "locks", debugKey: "debug-locks",
-    roles: [{ role: "lock", re: /^lock\b|^lock\s|sluis(?!kolk)/i, ds: "lock" }, { role: "chamber", re: /chamber|kolk/i, ds: "chamber" }],
+    // Sluizen staan verspreid over een punten- en een vlakkenlaag: beide ophalen.
+    roles: [{ role: "lock", re: /^lock\b|^lock\s|sluis(?!kolk)/i, ds: "lock", all: true }, { role: "chamber", re: /chamber|kolk/i, ds: "chamber" }],
     build: (r) => assembleLocks(r.lock || [], r.chamber || []),
   },
 };
@@ -96,14 +97,15 @@ async function planArcgis(base, cfg) {
   const layers = (svc.layers || []).concat(svc.tables || []);
   // Per onderdeel de kandidaat-laag met de meeste objecten (punten- en vlakkenlagen kunnen verschillen).
   const countOf = async (l) => { try { return (await getJSON(`${base}/${l.id}/query?where=1%3D1&returnCountOnly=true&f=json`)).count || 0; } catch { return 0; } };
-  const pickLayer = async (re) => {
-    const cands = layers.filter((l) => re.test(l.name) && !(l.subLayerIds && l.subLayerIds.length) && !/subchamber|deelkamer/i.test(l.name));
-    let best = null, bestN = -1;
-    for (const l of cands) { const n = await countOf(l); if (n > bestN) { best = l; bestN = n; } }
-    return best;
-  };
+  const candidates = (re) => layers.filter((l) => re.test(l.name) && !(l.subLayerIds && l.subLayerIds.length) && !/subchamber|deelkamer/i.test(l.name));
   const chosen = [];
-  for (const r of cfg.roles) { const layer = await pickLayer(r.re); if (layer) chosen.push({ role: r.role, layer }); }
+  for (const r of cfg.roles) {
+    const withCount = [];
+    for (const l of candidates(r.re)) withCount.push({ l, n: await countOf(l) });
+    withCount.sort((a, b) => b.n - a.n);
+    const use = r.all ? withCount.filter((x) => x.n > 0) : withCount.slice(0, 1);
+    for (const { l } of use) chosen.push({ role: r.role, layer: l });
+  }
   if (!chosen.length) throw new Error(`Geen lagen voor ${cfg.label} gevonden. Lagen: ` + layers.map((l) => l.name).join(", "));
   const tasks = [], meta = [];
   for (const { role, layer } of chosen) {
@@ -359,7 +361,8 @@ function pickNum(a, regs, exclude) {
 }
 function assembleLocks(lockFeats, chamberFeats) {
   const idOf = (a) => a.id ?? a.Id ?? a.ID;
-  const byId = new Map(lockFeats.map((f) => [String(idOf(f.a)), { f, chambers: [] }]));
+  const byId = new Map();
+  for (const f of lockFeats) { const k = String(idOf(f.a)); const prev = byId.get(k); if (!prev || (!prev.f.p && f.p)) byId.set(k, { f, chambers: [] }); }
   const linkKey = chamberFeats.length ? Object.keys(chamberFeats[0].a).find((k) => /^(parentid|lockid|lock_id)$/i.test(k)) : null;
   const orphans = [];
   let linkedByDistance = 0;
