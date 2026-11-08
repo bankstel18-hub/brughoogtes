@@ -72,49 +72,96 @@ function geomPoint(g) {
   return [+(s[1] / pts.length).toFixed(6), +(s[0] / pts.length).toFixed(6)];
 }
 
-// Stap 1 van de bruggen-taak: lagen vinden en de pagina's plannen.
-async function planBridgeJob() {
-  const svc = await getJSON(`${FIS}?f=json`);
+// Stap 1 van de bruggen-taak: bron kiezen, lagen vinden en de pagina's plannen.
+// Bronnen in volgorde: ArcGIS FeatureServer, ArcGIS MapServer, FIS-dataservice van vaarweginformatie.nl.
+export const FIS_SOURCES = [FIS, FIS.replace(/FeatureServer$/, "MapServer")];
+export const FIS_DS = "https://www.vaarweginformatie.nl/wfswms/dataservice/1.4";
+
+async function planArcgis(base) {
+  const svc = await getJSON(`${base}?f=json`);
   const layers = (svc.layers || []).concat(svc.tables || []);
-  const pickLayer = (re) => layers.filter((l) => re.test(l.name))
+  const pickLayer = (re) => layers.filter((l) => re.test(l.name) && !(l.subLayerIds && l.subLayerIds.length))
     .sort((a, b) => (/punt|point/i.test(b.name) ? 1 : 0) - (/punt|point/i.test(a.name) ? 1 : 0))[0];
   const chosen = [
     { role: "bridge", layer: pickLayer(/bridge|brug/i) },
     { role: "opening", layer: pickLayer(/opening/i) },
   ].filter((x) => x.layer);
   if (!chosen.length) throw new Error("Geen brug- of openingenlaag gevonden. Lagen: " + layers.map((l) => l.name).join(", "));
-
-  const tasks = [];
-  const meta = [];
+  const tasks = [], meta = [];
   for (const { role, layer } of chosen) {
-    const info = await getJSON(`${FIS}/${layer.id}?f=json`);
+    const info = await getJSON(`${base}/${layer.id}?f=json`);
     const max = Math.min(info.maxRecordCount || 1000, 2000);
     const pag = !!info.advancedQueryCapabilities?.supportsPagination;
-    meta.push({ role, id: layer.id, name: layer.name, fields: (info.fields || []).map((f) => `${f.name}:${f.type?.replace("esriFieldType", "")}`), max, pag });
+    meta.push({ source: base, role, id: layer.id, name: layer.name, fields: (info.fields || []).map((f) => `${f.name}:${f.type?.replace("esriFieldType", "")}`), max, pag });
     if (pag) {
-      const c = await getJSON(`${FIS}/${layer.id}/query?where=1%3D1&returnCountOnly=true&f=json`);
-      for (let off = 0; off < (c.count || 0); off += max) tasks.push({ role, id: layer.id, offset: off, n: max });
+      const c = await getJSON(`${base}/${layer.id}/query?where=1%3D1&returnCountOnly=true&f=json`);
+      for (let off = 0; off < (c.count || 0); off += max) tasks.push({ kind: "arcgis", base, role, id: layer.id, offset: off, n: max });
     } else {
-      const ids = (await getJSON(`${FIS}/${layer.id}/query?where=1%3D1&returnIdsOnly=true&f=json`)).objectIds || [];
+      const ids = (await getJSON(`${base}/${layer.id}/query?where=1%3D1&returnIdsOnly=true&f=json`)).objectIds || [];
       const chunk = Math.min(max, 400);
-      for (let i = 0; i < ids.length; i += chunk) tasks.push({ role, id: layer.id, ids: ids.slice(i, i + chunk) });
+      for (let i = 0; i < ids.length; i += chunk) tasks.push({ kind: "arcgis", base, role, id: layer.id, ids: ids.slice(i, i + chunk) });
     }
   }
-  return { started: new Date().toISOString(), meta, tasks: tasks.map((t, i) => ({ ...t, i, done: false })) };
+  if (!tasks.length) throw new Error("Lagen gevonden maar zonder objecten");
+  return { meta, tasks };
+}
+
+async function planDataservice() {
+  const g = await getJSON(`${FIS_DS}/geogeneration`);
+  const gen = g.GeoGeneration ?? g.geoGeneration ?? g.Result?.GeoGeneration ?? g;
+  if (gen == null || typeof gen === "object") throw new Error("Geen geogeneratie in antwoord: " + JSON.stringify(g).slice(0, 200));
+  const tasks = [], meta = [];
+  for (const [role, kind] of [["bridge", "bridge"], ["opening", "opening"]]) {
+    const first = await getJSON(`${FIS_DS}/${gen}/${kind}?offset=0&count=1`);
+    const total = first.TotalCount ?? first.totalCount ?? 0;
+    meta.push({ source: FIS_DS, role, generation: gen, total, sample: (first.Result || first.result || [])[0] });
+    for (let off = 0; off < total; off += 500) tasks.push({ kind: "ds", role, url: `${FIS_DS}/${gen}/${kind}`, offset: off, n: 500 });
+  }
+  if (!tasks.length) throw new Error("Dataservice gaf geen bruggen");
+  return { meta, tasks };
+}
+
+async function planBridgeJob() {
+  const errors = [];
+  for (const base of FIS_SOURCES) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { const r = await planArcgis(base); return finishPlan(r, errors); }
+      catch (e) { errors.push(`${base.split("/").pop()}: ${String(e.message || e).slice(0, 160)}`); }
+    }
+  }
+  try { const r = await planDataservice(); return finishPlan(r, errors); }
+  catch (e) { errors.push(`dataservice: ${String(e.message || e).slice(0, 160)}`); }
+  throw new Error("Geen enkele brugbron bereikbaar. " + errors.join(" | "));
+}
+function finishPlan({ meta, tasks }, errors) {
+  return { started: new Date().toISOString(), meta, fallbackErrors: errors, tasks: tasks.map((t, i) => ({ ...t, i, done: false })) };
+}
+
+function wktPoint(w) {
+  const m = /POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)/i.exec(String(w || ""));
+  return m ? [+(+m[2]).toFixed(6), +(+m[1]).toFixed(6)] : null;
 }
 
 async function runBridgeTask(t) {
-  const base = { outFields: "*", outSR: "4326", returnGeometry: "true", f: "json" };
+  if (t.kind === "ds") {
+    const j = await getJSON(`${t.url}?offset=${t.offset}&count=${t.n}`, {}, 30000);
+    return (j.Result || j.result || []).map((r) => {
+      const { Geometry, geometry, ...rest } = r;
+      return { a: slim(rest), p: wktPoint(Geometry || geometry) };
+    });
+  }
+  const base = t.base || FIS;
+  const q = { outFields: "*", outSR: "4326", returnGeometry: "true", f: "json" };
   let j;
   if (t.ids) {
-    j = await getJSON(`${FIS}/${t.id}/query`, { method: "POST", body: new URLSearchParams({ ...base, objectIds: t.ids.join(",") }) }, 20000);
+    j = await getJSON(`${base}/${t.id}/query`, { method: "POST", body: new URLSearchParams({ ...q, objectIds: t.ids.join(",") }) }, 30000);
   } else {
-    const p = new URLSearchParams({ ...base, where: "1=1", resultOffset: String(t.offset), resultRecordCount: String(t.n), orderByFields: "OBJECTID" });
+    const p = new URLSearchParams({ ...q, where: "1=1", resultOffset: String(t.offset), resultRecordCount: String(t.n), orderByFields: "OBJECTID" });
     try {
-      j = await getJSON(`${FIS}/${t.id}/query?${p}`, {}, 20000);
+      j = await getJSON(`${base}/${t.id}/query?${p}`, {}, 30000);
     } catch (e) {
       p.delete("orderByFields");
-      j = await getJSON(`${FIS}/${t.id}/query?${p}`, {}, 20000);
+      j = await getJSON(`${base}/${t.id}/query?${p}`, {}, 30000);
     }
   }
   return (j.features || []).map((f) => ({ a: slim(f.attributes), p: geomPoint(f.geometry) }));
@@ -166,6 +213,7 @@ export async function runBridgeJob(budgetMs = 8000, { force = false } = {}) {
 
   const debug = {
     at: payload.generatedAt,
+    fallbackErrors: job.fallbackErrors,
     layers: job.meta.map((m) => ({ ...m, samples: (m.role === "bridge" ? byRole.bridge : byRole.opening).slice(0, 4).map((f) => f.a) })),
   };
   await s.setJSON("debug-bridges", debug);
