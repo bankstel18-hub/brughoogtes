@@ -13,6 +13,10 @@ on:
         description: "Bruggen nu opnieuw ophalen"
         type: boolean
         default: false
+      zoek:
+        description: "Brug opzoeken in het logboek (deel van naam of plaats)"
+        type: string
+        default: ""
 
 permissions:
   contents: write   # alleen voor de maandelijkse 'keepalive'-commit
@@ -49,6 +53,8 @@ jobs:
           ls -la _site/data
 
       - name: Data bijwerken bij Rijkswaterstaat
+        env:
+          ZOEK: ${{ inputs.zoek }}
         run: node scripts/update.mjs _site/data ${{ inputs.force_bruggen && '--force-bruggen' || '' }}
 
       - name: Tijdelijke bestanden opruimen

@@ -70,6 +70,26 @@ if (br?.bridges?.length) {
   }
 }
 
+// Opzoeken van een brug (workflow-invoer 'zoek'): gegevens plus actuele doorvaarthoogte.
+const zoek = (process.env.ZOEK || "").trim().toLowerCase();
+if (zoek && br?.bridges?.length) {
+  const water = await store().get("water");
+  const fc = (await store().get("forecast"))?.series || {};
+  const km = (a, b, c, d) => { const r = Math.PI / 180, x = (d - b) * r * Math.cos(((a + c) / 2) * r), y = (c - a) * r; return Math.sqrt(x * x + y * y) * 6371; };
+  const hits = br.bridges.filter((b) => b.name.toLowerCase().includes(zoek) || (b.waterway || "").toLowerCase().includes(zoek)).slice(0, 12);
+  console.log(`zoek "${zoek}": ${hits.length} resultaten`);
+  for (const b of hits) {
+    const st = (water?.stations || []).filter((x) => x.cm != null).map((x) => ({ ...x, d: km(b.lat, b.lng, x.lat, x.lng) })).sort((x, y) => x.d - y.d)[0];
+    const cur = st && st.d <= 10 && b.underNAP != null ? +(b.underNAP - st.cm / 100).toFixed(2) : null;
+    const curOpen = st && st.d <= 10 && b.openUnderNAP != null ? +(b.openUnderNAP - st.cm / 100).toFixed(2) : null;
+    let minFc = null;
+    if (st && b.underNAP != null && fc[st.code]) for (const [t, cm] of fc[st.code].pts) { const c = +(b.underNAP - cm / 100).toFixed(2); if (!minFc || c < minFc.c) minFc = { c, t: new Date(t * 1000).toISOString() }; }
+    console.log("  brug:", JSON.stringify({ naam: b.name, plaats: b.waterway, beweegbaar: !!b.movable, gesloten: b.closed, open: b.open, ref: b.refName, mhwNAP: b.mhw, onderkantNAP: b.underNAP,
+      meetpunt: st && { naam: st.name, km: +st.d.toFixed(1), cmNAP: st.cm, tijd: st.t }, actueelGesloten: cur, actueelOpen: curOpen, laagsteVerwacht48u: minFc,
+      velden: Object.fromEntries(Object.entries(b.a || {}).filter(([k]) => /height|clearance|reference|mhw|type|canopen|width|number/i.test(k))) }));
+  }
+}
+
 // Klein overzicht voor de app en voor onderhoud.
 const status = await getStatus();
 await store().setJSON("status", { ...status, lastRun: new Date().toISOString() });
