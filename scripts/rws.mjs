@@ -218,10 +218,11 @@ async function runFisJob(cfg, budgetMs, { force = false } = {}) {
     (byRole[t.role] ||= []).push(...feats);
   }
   const items = cfg.build(byRole);
+  const buildStats = items.stats; delete items.stats;
   const payload = { generatedAt: new Date().toISOString(), source: "Rijkswaterstaat FIS (CC-0)", count: items.length, [cfg.out]: items };
   await s.setJSON(cfg.out, payload);
   await s.setJSON(cfg.debugKey, {
-    at: payload.generatedAt, fallbackErrors: job.fallbackErrors,
+    at: payload.generatedAt, fallbackErrors: job.fallbackErrors, buildStats,
     layers: job.meta.map((m) => ({ ...m, samples: (byRole[m.role] || []).slice(0, 4).map((f) => f.a) })),
   });
   for (const t of job.tasks) await s.delete(`${cfg.prefix}${t.i}`);
@@ -359,7 +360,8 @@ function assembleLocks(lockFeats, chamberFeats) {
       name: a.name || a.Name || (a.number != null ? `Kolk ${a.number}` : "Kolk"),
       length: pickNum(a, [/^usablelength$|^length$|lengte/i, /length/i], /convoy|width/i),
       width: pickNum(a, [/^usablewidth$|^width$|breedte/i, /width/i], /convoy/i),
-      sill: pickNum(a, [/silldepth|drempeldiepte|drempel/i, /sill|depth|diepte/i]),
+      // drempeldiepte staat negatief t.o.v. het peil; benedenhoofd (bebu) en bovenhoofd (bobi) apart
+      sill: (() => { const v = ["silldepthbebu", "silldepthbobi", "silldebthinner", "silldepth"].map((k) => num(a[k])).filter((n) => n != null && n !== 0).map(Math.abs); return v.length ? +Math.min(...v).toFixed(2) : null; })(),
       height: pickNum(a, [/clearanceheight|heightclosed|^height$|hoogte|doorvaarthoogte/i]),
     };
     const parent = linkKey ? byId.get(String(a[linkKey])) : null;
@@ -379,6 +381,7 @@ function assembleLocks(lockFeats, chamberFeats) {
     });
   }
   for (const { c, ch } of orphans) if (c.p) out.push({ id: idOf(c.a), lat: c.p[0], lng: c.p[1], name: ch.name, place: c.a.city || "", phone: "", chambers: [ch], a: c.a });
+  out.stats = { locks: lockFeats.length, chambers: chamberFeats.length, linkKey, linked: chamberFeats.length - orphans.length, orphanSample: orphans.slice(0, 3).map((o) => ({ parent: linkKey && o.c.a[linkKey], name: o.ch.name })), lockIdSample: lockFeats.slice(0, 3).map((f) => idOf(f.a)) };
   return out;
 }
 
