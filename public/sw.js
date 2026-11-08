@@ -1,7 +1,7 @@
 // Service worker: app werkt ook met slecht of geen bereik op het water.
 // Alles van de eigen site: eerst netwerk (zo zie je updates meteen), zonder verbinding de bewaarde versie.
 // Bibliotheken en lettertypes van CDN's: eerst de bewaarde versie.
-const VERSION = "bh-v8";
+const VERSION = "bh-v9";
 const SHELL = ["./", "index.html", "app.css", "app.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {

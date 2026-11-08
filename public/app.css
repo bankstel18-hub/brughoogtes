@@ -1,8 +1,10 @@
 /* Layout: kaart vult het scherm; paneel links (desktop) of als onderblad (telefoon) */
+[hidden]{display:none!important}
 :root{
   --bg:#eef3f6; --panel:#ffffff; --ink:#0f2a3d; --muted:#5b7183; --line:#d5e0e8;
   --accent:#0b5d8f; --accent-soft:#e1eef7; --water:#1a7fc1;
   --ok:#1f8a4c; --wait:#d98a00; --bad:#c62f2f; --unk:#8a99a6;
+  --chart-bg:#f3f8f1;
   --f-ui:"Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif;
   --f-num:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
   color-scheme:light;
@@ -105,10 +107,42 @@ button.btn{font:600 13.5px var(--f-ui);padding:5px 10px;border-radius:6px;border
 .pop .ch td.ok{color:#1f8a4c;font-weight:700}
 .pop .ch td.bad{color:#c62f2f;font-weight:700}
 
-.zoomhint{position:fixed;left:calc(185px + 50%);transform:translateX(-50%);top:calc(12px + env(safe-area-inset-top,0px));z-index:600;max-width:min(440px,calc(100vw - 32px));background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.15);text-align:center;pointer-events:none}
-@media (max-width:760px){.zoomhint{left:50%;transform:translateX(-50%);top:calc(10px + env(safe-area-inset-top,0px));max-width:calc(100vw - 120px)}}
+.zoomhint{max-width:min(440px,calc(100vw - 32px));background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.15);text-align:center;pointer-events:none}
+
 
 .pop .spark{touch-action:none;cursor:ew-resize;-webkit-user-select:none;user-select:none}
 .pop .spark:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .pop .sparkread{margin-top:4px;font-size:13.5px}
 @media (max-width:760px){.leaflet-popup-content{margin:10px 12px}.leaflet-popup-content-wrapper{max-width:calc(100vw - 24px)}}
+
+.maptop{position:fixed;left:calc(185px + 50%);transform:translateX(-50%);top:calc(12px + env(safe-area-inset-top,0px));z-index:650;display:grid;gap:6px;justify-items:center;pointer-events:none;width:min(460px,calc(100vw - 420px))}
+.stalewarn{background:var(--bad);color:#fff;border-radius:8px;padding:7px 12px;font-size:13.5px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.2);text-align:center}
+@media (max-width:760px){.maptop{left:50%;width:calc(100vw - 120px)}}
+.linkbtn{background:none;border:0;padding:0;font:600 13px var(--f-ui);color:var(--accent);text-decoration:underline;cursor:pointer}
+.modal{position:fixed;inset:0;z-index:2000;background:rgba(8,20,30,.55);display:grid;place-items:center;padding:max(16px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) max(16px,env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.modal-box{background:var(--panel);color:var(--ink);border-radius:12px;max-width:560px;width:100%;max-height:100%;overflow:auto;padding:20px 22px;box-shadow:0 10px 40px rgba(0,0,0,.35)}
+.modal-box.wide{max-width:980px}
+.modal-box h2{margin:0 0 10px;font-size:21px;text-wrap:balance}
+.modal-box ul{margin:0 0 12px;padding-left:18px;display:grid;gap:8px;font-size:14.5px;max-width:65ch}
+.modal-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px}
+.modal-head h2{margin:0}
+.btn.primary{background:var(--accent);color:#fff;border-color:var(--accent);padding:9px 14px;font-size:15px;width:100%}
+.disc-inline{margin:8px 0 0;padding:6px 8px;border-radius:6px;background:#fff4d6;color:#6b4a00;font-size:11.5px;line-height:1.35}
+.stamps{margin-top:6px;font-size:12px;color:#5b7183;line-height:1.45}
+/* RWS-stijl grafiek */
+.rwschart{display:block;margin-top:8px;touch-action:none;cursor:crosshair;-webkit-user-select:none;user-select:none}
+.rwschart text{font:10px var(--f-num);fill:#5b7183}
+.rwschart .grid{stroke:#d9e3d6;stroke-width:1}
+.rwschart .grid.day{stroke:#b9c8b6}
+.rwschart .nowline{stroke:#7d8a94;stroke-width:1.2}
+.rwschart .nowlbl{fill:#5b7183;font-size:9.5px}
+.rwschart .cx{stroke:#0f2a3d;stroke-width:1;stroke-dasharray:3 2}
+.rwschart .tip rect{fill:#fff;stroke:#b8c6d1}
+.rwschart .tip text{font:11px var(--f-ui);fill:#0f2a3d}
+.rwschart:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.legend2{display:grid;gap:2px;margin-top:6px;font-size:11.5px;color:#33495a}
+.legend2 i{display:inline-block;width:16px;height:3px;border-radius:2px;margin-right:6px;vertical-align:3px}
+.chartbar{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:4px}
+.chartbar .note{margin:0}
+.big-btn{padding:3px 9px;font-size:12.5px;flex:none}
+#bigChartBody .rwschart text{font-size:11px}

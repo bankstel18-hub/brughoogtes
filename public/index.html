@@ -81,13 +81,39 @@
     </section>
 
     <section class="sec foot">
-      <p>Hoogtes uit Rijkswaterstaat FIS, waterstanden uit RWS WaterWebservices. Gebruik dit als hulpmiddel, niet als vervanging van officiële vaarweginformatie, de Wateralmanak of je eigen waarneming. Controleer bij twijfel altijd de hoogteschaal bij de brug.</p>
+      <p><b>Geen officiële vaarweginformatie.</b> Hoogtes en sluisafmetingen uit Rijkswaterstaat FIS, waterstanden en verwachtingen uit RWS WaterWebservices, automatisch en zonder controle overgenomen. Gebruik op eigen risico; de maker aanvaardt geen aansprakelijkheid. Controleer altijd de hoogteschaal bij de brug en vaarweginformatie.nl.</p>
+      <p><button type="button" class="linkbtn" id="discOpen">Disclaimer en bronnen</button></p>
       <p id="status" class="small"></p>
     </section>
   </div>
 </aside>
 <main id="map" aria-label="Kaart"></main>
-<div id="zoomHint" class="zoomhint" role="status" hidden></div>
+<div class="maptop">
+  <div id="staleWarn" class="stalewarn" role="alert" hidden></div>
+  <div id="zoomHint" class="zoomhint" role="status" hidden></div>
+</div>
+
+<div id="disclaimer" class="modal" role="dialog" aria-modal="true" aria-labelledby="discTitle" hidden>
+  <div class="modal-box">
+    <h2 id="discTitle">Lees dit voordat je de app gebruikt</h2>
+    <ul>
+      <li><b>Geen officiële bron.</b> Brughoogtes Nederland is een hulpmiddel en geen officiële vaarweginformatie. Je gebruikt de app volledig op eigen risico.</li>
+      <li><b>Gegevens kunnen fout of verouderd zijn.</b> Brughoogtes, sluisafmetingen, waterstanden en verwachtingen komen automatisch uit open data van Rijkswaterstaat en worden zonder controle overgenomen. Door storingen, onderhoud of fouten in de bron of in deze app kunnen ze onjuist, onvolledig of verouderd zijn.</li>
+      <li><b>Verwachtingen zijn geen garantie.</b> Wind, rivierafvoer, golven en lokale omstandigheden kunnen grote afwijkingen geven. Een berekende doorvaarthoogte gebruikt het dichtstbijzijnde meetpunt; bij de brug zelf kan het water anders staan.</li>
+      <li><b>Controleer altijd zelf.</b> Kijk op de hoogteschaal bij de brug, raadpleeg vaarweginformatie.nl, waterinfo.rws.nl en de berichten aan de scheepvaart, en houd een ruime marge aan.</li>
+      <li><b>De schipper is verantwoordelijk.</b> Jij blijft verantwoordelijk voor een veilige vaart. De maker van deze app aanvaardt geen enkele aansprakelijkheid voor schade, direct of indirect, die voortvloeit uit het gebruik van of het vertrouwen op deze app of de getoonde gegevens.</li>
+    </ul>
+    <p class="small">Bronnen: Rijkswaterstaat Fairway Information Services en WaterWebservices (open data, CC-0), PDOK (Kadaster), OpenStreetMap, OpenSeaMap.</p>
+    <button type="button" class="btn primary" id="discOk">Ik begrijp het en gebruik de app op eigen risico</button>
+  </div>
+</div>
+
+<div id="bigChart" class="modal" role="dialog" aria-modal="true" aria-labelledby="bigChartTitle" hidden>
+  <div class="modal-box wide">
+    <div class="modal-head"><h2 id="bigChartTitle">Waterstand</h2><button type="button" class="btn" id="bigChartClose">Sluiten</button></div>
+    <div id="bigChartBody" class="pop"></div>
+  </div>
+</div>
 <button id="locate" class="fab" aria-label="Toon mijn locatie" title="Mijn locatie">
   <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
 </button>

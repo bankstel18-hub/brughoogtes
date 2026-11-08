@@ -156,7 +156,7 @@ async function loadForecast() {
   } catch (e) { meta.forecastErr = e.message; }
 }
 async function loadLocks() {
-  try { locks = (await getData("data/locks.json")).locks || []; } catch (e) { meta.locksErr = e.message; }
+  try { const d = await getData("data/locks.json"); locks = d.locks || []; meta.locksAt = d.generatedAt; } catch (e) { meta.locksErr = e.message; }
 }
 async function init() {
   try {
@@ -168,7 +168,19 @@ async function init() {
   }
   setInterval(async () => { await Promise.all([loadWater(), loadForecast()]); linkStations(); draw(); fresh(); }, 5 * 60e3);
 }
+function staleCheck() {
+  const w = meta.waterAt ? (Date.now() - Date.parse(meta.waterAt)) / 60000 : Infinity;
+  const el = $("staleWarn");
+  if (w > 30) {
+    el.hidden = false;
+    el.textContent = isFinite(w)
+      ? `Let op: de waterstanden zijn ${w < 120 ? Math.round(w) + " minuten" : Math.round(w / 60) + " uur"} oud. Vertrouw er niet op en controleer de actuele situatie.`
+      : "Let op: er zijn geen actuele waterstanden beschikbaar. Hoogtes zijn niet gecorrigeerd.";
+  } else el.hidden = true;
+}
+setInterval(staleCheck, 60e3);
 function fresh() {
+  staleCheck();
   const parts = [];
   if (meta.waterAt) parts.push(`Waterstanden ${ago(meta.waterAt)}`);
   else parts.push("Geen actuele waterstanden");
@@ -208,83 +220,185 @@ function minAhead(b) {
   return best;
 }
 
-let activeSpark = null, pendingRedraw = false;
+/* ---------- disclaimer ---------- */
+const DISC_VERSION = "2026-11-08";
+const DISC_SHORT = "Indicatief, geen officiële vaarweginformatie. Gegevens kunnen onjuist of verouderd zijn. Controleer altijd de hoogteschaal ter plaatse en vaarweginformatie.nl. Gebruik op eigen risico.";
+const tsNL = (iso) => iso ? `${new Date(iso).toLocaleString("nl-NL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} (${ago(iso)})` : "onbekend";
+function showDisclaimer(force) {
+  let ok = null; try { ok = localStorage.getItem("bh-disclaimer"); } catch {}
+  if (force || ok !== DISC_VERSION) { $("disclaimer").hidden = false; $("disclaimer").querySelector(".modal-box").scrollTop = 0; $("discOk").focus({ preventScroll: true }); }
+}
+$("discOk").addEventListener("click", () => { try { localStorage.setItem("bh-disclaimer", DISC_VERSION); } catch {} $("disclaimer").hidden = true; });
+$("discOpen").addEventListener("click", () => showDisclaimer(true));
+$("bigChartClose").addEventListener("click", () => { $("bigChart").hidden = true; });
+addEventListener("keydown", (e) => { if (e.key === "Escape") { $("bigChart").hidden = true; } });
+
+/* ---------- grafiek in RWS-stijl: meting, verwachting, astronomisch getij ---------- */
+let pendingRedraw = false;
+const seriesCache = new Map();   // code -> { data, at }
+const SERIES_COLORS = { meting: "#1f6fd1", verwachting: "#d9534f", astronomisch: "#8c969e" };
+const SERIES_NAMES = { meting: "Waterhoogte gemeten", verwachting: "Waterhoogte verwachting", astronomisch: "Waterhoogte astronomisch" };
+const fileOf = (code) => `data/series/${code.replace(/[^a-z0-9._-]/gi, "_")}.json`;
+
 function sparkReadout(s, b, h) {
   const lv = levelAt(s, h);
-  const when = h === 0 ? "Nu" : new Date(Date.now() + h * 3600e3).toLocaleString("nl-NL", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  const when = h === 0 ? "Nu" : new Date(Date.now() + h * 3600e3).toLocaleString("nl-NL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   if (!lv) return `<b>${when}</b>: geen waterstand beschikbaar`;
   const c = b ? clearanceFor(b, lv.cm) : null;
   return `<b>${when}</b>: ${signed(lv.cm)} cm NAP (${kindTxt(lv.kind)})${b && c != null && (b.mhw != null || b.underNAP != null) ? ` · doorvaarthoogte <b>${fmt(c)} m</b>` : ""}`;
 }
-// Slepen in de grafiek: tijdstip kiezen zonder de popup te sluiten.
-function bindSpark(root) {
-  const svg = root.querySelector(".spark");
-  if (!svg || !activeSpark) return;
-  const ctx = activeSpark;
-  const setH = (h) => {
-    h = Math.max(0, Math.min(48, h));
-    if (h === offsetH() && svg.dataset.init) return;
-    svg.dataset.init = "1";
-    $("when").value = h; updateWhen();
-    const tSel = Date.now() / 1000 + h * 3600, xs = ctx.x(tSel);
-    const lv = levelAt(ctx.s, h);
-    svg.querySelector(".selline").setAttribute("x1", xs); svg.querySelector(".selline").setAttribute("x2", xs);
-    const pt = svg.querySelector(".selpt"); pt.setAttribute("cx", xs); pt.setAttribute("cy", lv ? ctx.y(lv.cm) : -10);
-    svg.setAttribute("aria-valuenow", h);
-    root.querySelector(".sparkread").innerHTML = sparkReadout(ctx.s, ctx.b, h);
-    pendingRedraw = true;
+
+// Gegevens voor de grafiek: uit het bestand per meetpunt, of (zolang dat laadt) uit wat de app al heeft.
+function chartData(s) {
+  const c = seriesCache.get(s.code)?.data;
+  if (c) return { meting: c.meting?.pts || [], verwachting: c.verwachting?.pts || [], astronomisch: c.astronomisch?.pts || [], meta: c, full: true };
+  const f = forecast[s.code];
+  return {
+    meting: s.cm != null && s.t ? [[Date.parse(s.t) / 1000, s.cm]] : [],
+    verwachting: f?.kind === "verwachting" ? f.pts : [], astronomisch: f?.kind === "astronomisch" ? f.pts : [],
+    meta: null, full: false,
   };
-  const fromEvent = (e) => {
-    const r = svg.getBoundingClientRect();
-    const vx = ((e.clientX - r.left) / r.width) * ctx.W;
-    const t = ctx.t0 + ((vx - ctx.L) / (ctx.W - ctx.L - ctx.R)) * (ctx.t1 - ctx.t0);
-    return Math.round((t - Date.now() / 1000) / 3600);
-  };
-  let dragging = false;
-  const stop = (e) => { e.stopPropagation(); };
-  ["mousedown", "touchstart", "dblclick", "wheel"].forEach((ev) => svg.addEventListener(ev, stop, { passive: true }));
-  svg.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); dragging = true; svg.setPointerCapture(e.pointerId); setH(fromEvent(e)); });
-  svg.addEventListener("pointermove", (e) => { if (dragging) { e.preventDefault(); setH(fromEvent(e)); } });
-  const end = (e) => { if (dragging) { dragging = false; try { svg.releasePointerCapture(e.pointerId); } catch {} } };
-  svg.addEventListener("pointerup", end); svg.addEventListener("pointercancel", end);
-  svg.addEventListener("keydown", (e) => {
-    const step = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1, PageUp: 6, PageDown: -6 }[e.key];
-    if (step) { e.preventDefault(); setH(offsetH() + step); }
-  });
 }
-function sparkline(s, b) {
-  const fc = forecast[s.code];
-  const now = Date.now() / 1000, t0 = now - 2 * 3600, t1 = now + 48 * 3600;
-  const pts = (fc?.pts || []).filter(([t]) => t >= t0 && t <= t1);
-  const meas = s.cm != null && s.t ? [Date.parse(s.t) / 1000, s.cm] : null;
-  if (!pts.length && !meas) return "";
-  const vals = pts.map((p) => p[1]).concat(meas ? [meas[1]] : []);
-  let lo = Math.min(...vals), hi = Math.max(...vals);
-  if (hi - lo < 20) { const m = (hi + lo) / 2; lo = m - 10; hi = m + 10; }
-  const W = 280, H = 96, L = 34, R = 6, T = 8, B = 18;
+function niceStep(range) { return range > 300 ? 100 : range > 150 ? 50 : range > 60 ? 25 : range > 25 ? 10 : 5; }
+
+function chartSVG(d, size) {
+  const now = Date.now() / 1000, t0 = now - 48 * 3600, t1 = now + 48 * 3600;
+  const { W, H } = size, L = 38, R = 8, T = 10, B = 22;
+  const all = ["meting", "verwachting", "astronomisch"].flatMap((k) => d[k].filter(([t]) => t >= t0 && t <= t1).map((p) => p[1]));
+  if (!all.length) return null;
+  let lo = Math.min(...all), hi = Math.max(...all);
+  const step = niceStep(hi - lo || 20);
+  lo = Math.floor((lo - 5) / step) * step; hi = Math.ceil((hi + 5) / step) * step;
+  if (hi - lo < step * 2) hi = lo + step * 2;
   const x = (t) => L + ((t - t0) / (t1 - t0)) * (W - L - R);
   const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
-  const water = css("--water");
-  const path = pts.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("");
-  const tSel = targetMs() / 1000;
-  const ticks = [0, 12, 24, 36, 48].map((h) => {
-    const t = now + h * 3600, d = new Date(t * 1000);
-    return `<line x1="${x(t)}" x2="${x(t)}" y1="${T}" y2="${H - B}" stroke="#d5e0e8" stroke-width="1"/><text x="${x(t)}" y="${H - 5}" text-anchor="${h === 48 ? "end" : "middle"}">${h === 0 ? "nu" : d.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}</text>`;
-  }).join("");
-  activeSpark = { s, b, t0, t1, now, W, L, R, T, H, B, x, y, fc };
-  const selV = levelAt(s)?.cm;
-  return `<svg class="spark" viewBox="0 0 ${W} ${H}" width="100%" role="slider" tabindex="0" aria-label="Kies een tijdstip: sleep door de grafiek of gebruik de pijltjestoetsen" aria-valuemin="0" aria-valuemax="48" aria-valuenow="${offsetH()}">
-    ${ticks}
-    <text x="${L - 4}" y="${y(hi) + 3}" text-anchor="end">${signed(Math.round(hi))}</text>
-    <text x="${L - 4}" y="${y(lo) + 3}" text-anchor="end">${signed(Math.round(lo))}</text>
-    ${path ? `<path d="${path}" fill="none" stroke="${water}" stroke-width="2" stroke-dasharray="${fc?.kind === "astronomisch" ? "4 3" : "0"}"/>` : ""}
-    ${meas ? `<circle cx="${x(Math.max(t0, meas[0]))}" cy="${y(meas[1])}" r="3.5" fill="#0f2a3d"/>` : ""}
-    <line class="selline" x1="${x(tSel)}" x2="${x(tSel)}" y1="${T}" y2="${H - B}" stroke="${css("--wait")}" stroke-width="2.5"/>
-    <circle class="selpt" cx="${x(tSel)}" cy="${selV != null ? y(selV) : -10}" r="4.5" fill="${css("--wait")}" stroke="#fff" stroke-width="1.5"/>
-    <rect class="spark-hit" x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent"/>
-  </svg>
-  <div class="sparkread">${sparkReadout(s, b, offsetH())}</div>
-  <div class="note">${fc ? "Sleep door de grafiek om een tijdstip te kiezen. " : ""}Lijn: ${fc ? (fc.kind === "astronomisch" ? "astronomisch getij (zonder wind en afvoer)" : "verwachting Rijkswaterstaat") : "geen verwachting beschikbaar"} · stip: laatste meting · oranje: gekozen tijdstip · cm t.o.v. NAP</div>`;
+  let g = `<rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="var(--chart-bg)"/>`;
+  for (let v = lo; v <= hi; v += step) g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="grid"/><text x="${L - 5}" y="${y(v) + 3.5}" text-anchor="end">${v}</text>`;
+  // verticale lijnen elke 12 uur (lokale tijd), met datum om middernacht
+  const startDay = new Date(t0 * 1000); startDay.setHours(0, 0, 0, 0);
+  for (let ms = startDay.getTime(); ms <= t1 * 1000; ms += 12 * 3600e3) {
+    const t = ms / 1000; if (t < t0) continue;
+    const dd = new Date(ms), mid = dd.getHours() === 0;
+    g += `<line x1="${x(t)}" x2="${x(t)}" y1="${T}" y2="${H - B}" class="grid${mid ? " day" : ""}"/>`;
+    if (W > 400 || mid) g += `<text x="${x(t)}" y="${H - 7}" text-anchor="middle">${mid ? dd.toLocaleDateString("nl-NL", { day: "numeric", month: "short" }) : "12:00"}</text>`;
+  }
+  const line = (pts, color, w, dash) => {
+    const p = pts.filter(([t]) => t >= t0 && t <= t1);
+    if (!p.length) return "";
+    if (p.length === 1) return `<circle cx="${x(p[0][0])}" cy="${y(p[0][1])}" r="3" fill="${color}"/>`;
+    return `<path d="${p.map(([t, v], i) => `${i ? "L" : "M"}${x(t).toFixed(1)},${y(v).toFixed(1)}`).join("")}" fill="none" stroke="${color}" stroke-width="${w}" stroke-linejoin="round" ${dash ? `stroke-dasharray="${dash}"` : ""}/>`;
+  };
+  g += line(d.astronomisch, SERIES_COLORS.astronomisch, 1.6);
+  g += line(d.verwachting, SERIES_COLORS.verwachting, 1.6);
+  g += line(d.meting, SERIES_COLORS.meting, 2);
+  g += `<line x1="${x(now)}" x2="${x(now)}" y1="${T}" y2="${H - B}" class="nowline"/><text x="${x(now) + 3}" y="${T + 10}" class="nowlbl">nu</text>`;
+  const tSel = now + offsetH() * 3600;
+  g += `<line class="selline" x1="${x(tSel)}" x2="${x(tSel)}" y1="${T}" y2="${H - B}" stroke="var(--wait)" stroke-width="2"/>`;
+  g += `<g class="cross" visibility="hidden"><line class="cx" y1="${T}" y2="${H - B}"/><g class="tip"><rect rx="4"/><text class="tt"></text></g></g>`;
+  g += `<rect class="hit" x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent"/>`;
+  return { svg: `<svg class="rwschart" viewBox="0 0 ${W} ${H}" width="100%" role="slider" tabindex="0" aria-label="Waterstandgrafiek: sleep of gebruik de pijltjestoetsen om een tijdstip te kiezen" aria-valuemin="0" aria-valuemax="48" aria-valuenow="${offsetH()}">${g}</svg>`, x, y, t0, t1, L, R, W, H, T, B };
+}
+function legendHTML(d) {
+  return `<div class="legend2">${["meting", "verwachting", "astronomisch"].filter((k) => d[k].length).map((k) => `<span><i style="background:${SERIES_COLORS[k]}"></i>${SERIES_NAMES[k]} t.o.v. NAP in cm</span>`).join("")}</div>`;
+}
+function valueAt(pts, t, maxGap = 900) {
+  let best = null, bd = Infinity;
+  for (const p of pts) { const dd = Math.abs(p[0] - t); if (dd < bd) { bd = dd; best = p; } }
+  return best && bd <= maxGap ? best[1] : null;
+}
+function stampsHTML(s, d) {
+  const m = d.meta, f = forecast[s.code];
+  const t = (iso) => iso ? `${new Date(iso).toLocaleString("nl-NL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} (${ago(iso)})` : "onbekend";
+  const rows = [];
+  rows.push(`Laatste meting: ${s.cm != null && s.t ? t(s.t) : "geen recente meting"}`);
+  if (m?.verwachting?.fetchedAt || f?.kind === "verwachting") rows.push(`Verwachting RWS opgehaald: ${t(m?.verwachting?.fetchedAt || f?.at)}`);
+  if (m?.astronomisch?.fetchedAt) rows.push(`Astronomisch getij opgehaald: ${t(m.astronomisch.fetchedAt)}`);
+  return `<div class="stamps">${rows.join("<br>")}</div>`;
+}
+
+function chartBlock(s, b) {
+  return `<div class="chartwrap" data-code="${esc(s.code)}">${chartInner(s, b, { W: 320, H: 180 })}</div>`;
+}
+function chartInner(s, b, size) {
+  const d = chartData(s), c = chartSVG(d, size);
+  if (!c) return `<div class="note">Geen meetreeks of verwachting beschikbaar voor dit meetpunt.</div>${stampsHTML(s, d)}`;
+  return `${c.svg}<div class="sparkread">${sparkReadout(s, b, offsetH())}</div>${legendHTML(d)}
+    <div class="chartbar"><span class="note">Tik of sleep in de grafiek voor de waarden per tijdstip.${d.full ? "" : " Meetreeks laden…"}</span><button type="button" class="btn big-btn">Vergroot</button></div>
+    ${stampsHTML(s, d)}`;
+}
+
+// Koppelt interactie (tooltip, tijdstip kiezen) aan een grafiek in 'root'.
+function bindChart(root, s, b, size) {
+  const svg = root.querySelector(".rwschart");
+  if (!svg) return;
+  const d = chartData(s), c = chartSVG(d, size);
+  if (!c) return;
+  const cross = svg.querySelector(".cross"), cx = svg.querySelector(".cx"), tip = svg.querySelector(".tip"), tt = svg.querySelector(".tt"), rect = tip.querySelector("rect");
+  const show = (t) => {
+    t = Math.max(c.t0, Math.min(c.t1, t));
+    const xs = c.x(t);
+    cx.setAttribute("x1", xs); cx.setAttribute("x2", xs); cross.setAttribute("visibility", "visible");
+    const lines = [new Date(t * 1000).toLocaleString("nl-NL", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })];
+    for (const k of ["meting", "verwachting", "astronomisch"]) { const v = valueAt(d[k], t, k === "meting" ? 900 : 2400); if (v != null) lines.push(`${k === "meting" ? "Gemeten" : k === "verwachting" ? "Verwacht" : "Astronomisch"}: ${signed(v)} cm`); }
+    tt.innerHTML = lines.map((l, i) => `<tspan x="0" dy="${i ? 13 : 0}"${i === 0 ? ' font-weight="700"' : ""}>${esc(l)}</tspan>`).join("");
+    const bb = { w: Math.max(...lines.map((l) => l.length)) * 5.6 + 12, h: lines.length * 13 + 8 };
+    let tx = xs + 8; if (tx + bb.w > c.W - c.R) tx = xs - 8 - bb.w;
+    rect.setAttribute("x", -6); rect.setAttribute("y", -12); rect.setAttribute("width", bb.w); rect.setAttribute("height", bb.h);
+    tip.setAttribute("transform", `translate(${tx + 6},${c.T + 16})`);
+    if (t >= Date.now() / 1000 - 1800) setH(Math.round((t - Date.now() / 1000) / 3600));
+  };
+  const setH = (h) => {
+    h = Math.max(0, Math.min(48, h));
+    if (h !== offsetH()) { $("when").value = h; updateWhen(); pendingRedraw = true; }
+    const xs = c.x(Date.now() / 1000 + h * 3600);
+    const sl = svg.querySelector(".selline"); sl.setAttribute("x1", xs); sl.setAttribute("x2", xs);
+    svg.setAttribute("aria-valuenow", h);
+    const rd = root.querySelector(".sparkread"); if (rd) rd.innerHTML = sparkReadout(s, b, h);
+  };
+  const tOf = (e) => { const r = svg.getBoundingClientRect(); const vx = ((e.clientX - r.left) / r.width) * c.W; return c.t0 + ((vx - c.L) / (c.W - c.L - c.R)) * (c.t1 - c.t0); };
+  let dragging = false;
+  ["mousedown", "touchstart", "dblclick", "wheel"].forEach((ev) => svg.addEventListener(ev, (e) => e.stopPropagation(), { passive: true }));
+  svg.addEventListener("pointerdown", (e) => { e.stopPropagation(); e.preventDefault(); dragging = true; svg.setPointerCapture(e.pointerId); show(tOf(e)); });
+  svg.addEventListener("pointermove", (e) => { if (dragging || e.pointerType === "mouse") show(tOf(e)); });
+  const end = (e) => { dragging = false; try { svg.releasePointerCapture(e.pointerId); } catch {} };
+  svg.addEventListener("pointerup", end); svg.addEventListener("pointercancel", end);
+  svg.addEventListener("pointerleave", (e) => { if (!dragging && e.pointerType === "mouse") cross.setAttribute("visibility", "hidden"); });
+  svg.addEventListener("keydown", (e) => {
+    const step = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1, PageUp: 6, PageDown: -6 }[e.key];
+    if (step) { e.preventDefault(); show(Date.now() / 1000 + (offsetH() + step) * 3600); }
+  });
+  const big = root.querySelector(".big-btn");
+  if (big) big.onclick = (e) => { e.stopPropagation(); openBigChart(s, b); };
+}
+
+// Grafiek in een popup: eerst met wat er is, daarna met de volledige meetreeks.
+async function initChartIn(root, s, b) {
+  const wrap = root.querySelector(".chartwrap");
+  if (!wrap) return;
+  const size = { W: 320, H: 180 };
+  bindChart(wrap, s, b, size);
+  const cached = seriesCache.get(s.code);
+  if (cached && Date.now() - cached.at < 5 * 60e3) return;
+  try {
+    const r = await fetch(fileOf(s.code), { cache: "no-cache" });
+    if (!r.ok) throw new Error(r.status);
+    seriesCache.set(s.code, { data: await r.json(), at: Date.now() });
+    if (!wrap.isConnected) return;
+    wrap.innerHTML = chartInner(s, b, size);
+    bindChart(wrap, s, b, size);
+  } catch {
+    const n = wrap.querySelector(".chartbar .note"); if (n) n.textContent = "Tik of sleep in de grafiek voor de waarden per tijdstip. Volledige meetreeks niet beschikbaar.";
+  }
+}
+
+// Grote weergave (venster over de kaart).
+function openBigChart(s, b) {
+  const dlg = $("bigChart"), body = $("bigChartBody");
+  $("bigChartTitle").textContent = s.name;
+  const size = innerWidth < 700 ? { W: 520, H: 360 } : { W: 900, H: 420 };
+  body.innerHTML = chartInner(s, b, size).replace('<button type="button" class="btn big-btn">Vergroot</button>', "") + `<p class="disc-inline">${DISC_SHORT}</p>`;
+  bindChart(body, s, b, size);
+  dlg.hidden = false; $("bigChartClose").focus();
 }
 
 function popupBridge(b) {
@@ -300,7 +414,7 @@ function popupBridge(b) {
         ? `<br>Doorvaarthoogte ${whenTxt()}: <b>${fmt(b.cur)} m</b> (${refTxt(b)}: ${fmt(b.closed)} m)`
           + (mn ? `<br>Laagste verwachte hoogte komende 48 uur: <b>${fmt(mn.c)} m</b> op ${new Date(mn.t * 1000).toLocaleString("nl-NL", { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : "")
         : `<br>${b.mhw == null && b.refName && b.refName !== "UNSPECIFIED" ? `De hoogte van deze brug geldt ${refTxt(b)}, een geregeld peil. Daarom wordt niet gecorrigeerd met meetpunten van Rijkswaterstaat.` : "Voor deze brug ontbreekt een NAP-referentie in de brondata, dus de hoogte is niet automatisch gecorrigeerd."}`)
-      + `</div>${sparkline(b.st, b)}`;
+      + `</div>${chartBlock(b.st, b)}`;
   }
   return `<div class="pop"><h3>${esc(b.name)}</h3>
     ${b.waterway ? `<div class="note" style="margin:0">${esc(b.waterway)}</div>` : ""}
@@ -310,7 +424,9 @@ function popupBridge(b) {
     <div class="note">${b.movable ? "Beweegbare brug" : "Vaste brug"} · hoogte ${refTxt(b)} · bron: Rijkswaterstaat FIS</div>
     ${wl}
     <details><summary>Alle gegevens</summary><table>${rows}</table></details>
-    <div class="note">${usingCur ? "Gecorrigeerd met het dichtstbijzijnde meetpunt; lokaal kan de waterstand afwijken, en een verwachting is geen garantie." : `Hoogte ${refTxt(b)}. Controleer ter plaatse de hoogteschaal.`}</div></div>`;
+    <div class="note">${usingCur ? "Gecorrigeerd met het dichtstbijzijnde meetpunt; lokaal kan de waterstand afwijken, en een verwachting is geen garantie." : `Hoogte ${refTxt(b)}. Controleer ter plaatse de hoogteschaal.`}</div>
+    <div class="stamps">Brugdata Rijkswaterstaat FIS: ${tsNL(meta.bridgesAt)}</div>
+    <p class="disc-inline">${DISC_SHORT}</p></div>`;
 }
 const m2 = (v) => (v == null ? "–" : v.toFixed(v < 10 ? 2 : 1).replace(".", ","));
 /* ---------- sluizen: past mijn schip? ---------- */
@@ -347,14 +463,16 @@ function popupLock(l) {
       : `<div class="note">Geen kolkafmetingen in de brondata.</div>`}
     ${l.phone ? `<div class="note">Contact: <span style="user-select:all">${esc(l.phone)}</span></div>` : ""}
     <details><summary>Alle gegevens</summary><table>${Object.entries(l.a || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table></details>
-    <div class="note">Bron: Rijkswaterstaat FIS. Controleer bedientijden en actuele stremmingen op vaarweginformatie.nl.</div></div>`;
+    <div class="note">Bron: Rijkswaterstaat FIS. Controleer bedientijden en actuele stremmingen op vaarweginformatie.nl.</div>
+    <div class="stamps">Sluisdata Rijkswaterstaat FIS: ${tsNL(meta.locksAt)}</div>
+    <p class="disc-inline">${DISC_SHORT}</p></div>`;
 }
 function popupStation(s) {
   const lv = s.lvl;
   return `<div class="pop"><h3>${esc(s.name)}</h3><div class="note" style="margin:0">Meetpunt Rijkswaterstaat · ${esc(s.code)}</div>
     <div style="margin:6px 0"><span class="big">${lv ? signed(lv.cm) + " cm" : "–"}</span> NAP ${lv ? `<span class="note">${kindTxt(lv.kind)} ${whenTxt()}</span>` : ""}</div>
     <div class="note">Laatste meting: ${s.cm != null ? `${signed(s.cm)} cm om ${new Date(s.t).toLocaleString("nl-NL")} (${ago(s.t)})` : "geen"}</div>
-    ${sparkline(s)}</div>`;
+    ${chartBlock(s)}<p class="disc-inline">${DISC_SHORT}</p></div>`;
 }
 
 /* ---------- zoomniveaus: hoe verder ingezoomd, hoe meer details ---------- */
@@ -385,7 +503,7 @@ function draw() {
         color: usingCur ? water : "#0f2a3d", weight: usingCur ? 2.5 : b.movable ? 1.5 : 1,
         fillColor: colorOf(s), fillOpacity: 0.95,
       });
-      m.bindPopup(() => popupBridge(b), popOpts(330));
+      m.bindPopup((layer) => { layer.getPopup()._bhCtx = b.st ? { s: b.st, b } : null; return popupBridge(b); }, popOpts(340));
       m.addTo(bridgeLayer);
       b._m = m;
     }
@@ -402,7 +520,7 @@ function draw() {
         icon: L.divIcon({ className: "", html: `<i class="sq" style="display:block;width:11px;height:11px"></i>`, iconSize: [11, 11] }),
         keyboard: false, title: st.name,
       });
-      m.bindPopup(() => popupStation(st), popOpts(320));
+      m.bindPopup((layer) => { layer.getPopup()._bhCtx = { s: st, b: null }; return popupStation(st); }, popOpts(340));
       m.addTo(stationLayer);
     }
   }
@@ -508,8 +626,9 @@ map.on("zoomend", () => {
 });
 map.on("moveend", updateView);
 map.on("popupopen", (e) => {
-  bindSpark(e.popup.getElement());
-  e.popup.off("contentupdate").on("contentupdate", () => bindSpark(e.popup.getElement()));
+  const ctx = e.popup._bhCtx;
+  if (ctx) initChartIn(e.popup.getElement(), ctx.s, ctx.b);
+  e.popup.off("contentupdate").on("contentupdate", () => { const c2 = e.popup._bhCtx; if (c2) initChartIn(e.popup.getElement(), c2.s, c2.b); });
   const p = $("panel");
   if (innerWidth <= 760 && !p.classList.contains("min")) {
     p.classList.add("min");
@@ -527,5 +646,6 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
   addEventListener("load", () => navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {}));
 }
+showDisclaimer(false);
 init();
 })();
