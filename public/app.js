@@ -104,7 +104,16 @@ function clearanceFor(b, cm) {
   return null;
 }
 const effClosed = (b) => ($("useWater").checked && b.cur != null ? b.cur : b.closed);
-const effOpen = (b) => (b.open == null ? null : $("useWater").checked && b.cur != null && b.closed != null ? +(b.open + (b.cur - b.closed)).toFixed(2) : b.open);
+const effOpen = (b) => {
+  if (b.open == null) return null;
+  if (!$("useWater").checked || b.cur == null) return b.open;
+  if (b.openUnderNAP != null && b.st?.lvl) return +(b.openUnderNAP - b.st.lvl.cm / 100).toFixed(2);
+  return b.closed != null ? +(b.open + (b.cur - b.closed)).toFixed(2) : b.open;
+};
+const REF = { KP: "kanaalpeil", NAP: "NAP", MP: "meerpeil", SP: "streefpeil", PP: "polderpeil", BP: "boezempeil", UNSPECIFIED: "referentiepeil" };
+const refTxt = (b) => b.mhw != null
+  ? `bij maatgevend hoogwater (${signed(Math.round(b.mhw * 100))} cm NAP)`
+  : `t.o.v. ${REF[b.refName] || b.refName || "referentiepeil"}`;
 
 function state(b) {
   const n = need(), c = effClosed(b), o = effOpen(b);
@@ -227,13 +236,13 @@ function popupBridge(b) {
   const usingCur = $("useWater").checked && b.cur != null;
   const rows = Object.entries(b.a || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("");
   let wl = "";
-  if (b.st && b.st.lvl) {
+  if (b.st && b.st.lvl && (b.mhw != null || b.underNAP != null || b.refNAP != null)) {
     const lv = b.st.lvl, mn = minAhead(b);
     wl = `<div class="wl">Waterstand ${esc(b.st.name)} (${b.stKm.toFixed(1)} km), ${kindTxt(lv.kind)} ${whenTxt()}: <b>${signed(lv.cm)} cm NAP</b>`
       + (b.cur != null
-        ? `<br>Doorvaarthoogte ${whenTxt()}: <b>${fmt(b.cur)} m</b> (bij referentiepeil ${fmt(b.closed)} m)`
+        ? `<br>Doorvaarthoogte ${whenTxt()}: <b>${fmt(b.cur)} m</b> (${refTxt(b)}: ${fmt(b.closed)} m)`
           + (mn ? `<br>Laagste verwachte hoogte komende 48 uur: <b>${fmt(mn.c)} m</b> op ${new Date(mn.t * 1000).toLocaleString("nl-NL", { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : "")
-        : `<br>Deze brug heeft geen NAP-referentie in de brondata, dus de hoogte is niet automatisch gecorrigeerd.`)
+        : `<br>${b.mhw == null && b.refName && b.refName !== "UNSPECIFIED" ? `De hoogte van deze brug geldt ${refTxt(b)}, een geregeld peil. Daarom wordt niet gecorrigeerd met meetpunten van Rijkswaterstaat.` : "Voor deze brug ontbreekt een NAP-referentie in de brondata, dus de hoogte is niet automatisch gecorrigeerd."}`)
       + `</div>${sparkline(b.st, b)}`;
   }
   return `<div class="pop"><h3>${esc(b.name)}</h3>
@@ -241,10 +250,10 @@ function popupBridge(b) {
     <div style="margin:6px 0"><span class="big">${fmt(c)} m</span> ${b.movable ? "gesloten" : "doorvaarthoogte"}${usingCur ? ` (${whenTxt()})` : ""}
     ${b.movable ? `<br><span class="mid">${o != null ? fmt(o) + " m" : "onbeperkt of onbekend"}</span> open` : ""}</div>
     <div style="font-weight:700;color:${colorOf(s)}">${label}</div>
-    <div class="note">${b.movable ? "Beweegbare brug" : "Vaste brug"} · bron: Rijkswaterstaat FIS</div>
+    <div class="note">${b.movable ? "Beweegbare brug" : "Vaste brug"} · hoogte ${refTxt(b)} · bron: Rijkswaterstaat FIS</div>
     ${wl}
     <details><summary>Alle gegevens</summary><table>${rows}</table></details>
-    <div class="note">${usingCur ? "Gecorrigeerd met het dichtstbijzijnde meetpunt; lokaal kan de waterstand afwijken, en een verwachting is geen garantie." : "Hoogte t.o.v. het referentiepeil van de vaarweg. Controleer de actuele waterstand."}</div></div>`;
+    <div class="note">${usingCur ? "Gecorrigeerd met het dichtstbijzijnde meetpunt; lokaal kan de waterstand afwijken, en een verwachting is geen garantie." : `Hoogte ${refTxt(b)}. Controleer ter plaatse de hoogteschaal.`}</div></div>`;
 }
 function popupStation(s) {
   const lv = s.lvl;

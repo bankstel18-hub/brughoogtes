@@ -261,26 +261,49 @@ const RE_REF_NAME = [/reference.?level|referentie.?peil|refniveau|ref_level|ijkv
 
 function normalize(a, p, parent, src) {
   const all = Object.assign({}, parent || {}, a);
-  const closed = pick(a, RE_CLOSED, EX_CLOSED) ?? pick(parent, RE_CLOSED, EX_CLOSED);
-  const open = pick(a, RE_OPEN) ?? pick(parent, RE_OPEN);
   const navNum = (v) => { const n = num(v); return n == null || Math.abs(n) > 5000 ? null : (Math.abs(n) > 60 ? +(n / 100).toFixed(2) : +n.toFixed(2)); };
-  const underNAP = pick(all, RE_UNDER_NAP, /open|width|breedte/i, navNum);
-  const refNAP = pick(all, RE_REF_NAP, null, navNum);
+  const minOf = (...v) => { const x = v.filter((n) => n != null); return x.length ? Math.min(...x) : null; };
+
+  let closed, open, underNAP = null, openUnderNAP = null, mhw = null, refNAP = null;
+  const hasFis = "heightclosed" in all || "clearanceheightclosed" in all;
+  if (hasFis) {
+    // RWS FIS: heightclosed = hoogte t.o.v. referentiepeil; clearanceheightclosed = doorvaarthoogte
+    // (bij rivieren: bij maatgevend hoogwater, MHW = mhwoffset m t.o.v. NAP). Vaste waarde: de laagste.
+    const hc = height(all.heightclosed), chc = height(all.clearanceheightclosed);
+    const ho = height(all.heightopened), cho = height(all.clearanceheightopened);
+    closed = minOf(hc, chc);
+    open = minOf(ho, cho);
+    if (/river/i.test(String(all.mhwreferencelevel || "")) && num(all.mhwoffset) != null) {
+      mhw = +num(all.mhwoffset).toFixed(2);
+      if (chc != null) underNAP = +(chc + mhw).toFixed(2);       // onderkant brug t.o.v. NAP
+      if (cho != null) openUnderNAP = +(cho + mhw).toFixed(2);
+    }
+  } else {
+    closed = pick(a, RE_CLOSED, EX_CLOSED) ?? pick(parent, RE_CLOSED, EX_CLOSED);
+    open = pick(a, RE_OPEN) ?? pick(parent, RE_OPEN);
+    underNAP = pick(all, RE_UNDER_NAP, /open|width|breedte/i, navNum);
+    refNAP = pick(all, RE_REF_NAP, null, navNum);
+  }
   const refName = str(all, RE_REF_NAME);
 
-  const typeTxt = `${str(all, [/type|soort|category|catbrg/i])} ${str(all, [/canopen|movable|beweeg/i])}`.toLowerCase();
-  let movable = open != null || /beweeg|bascul|draai|hef|lift|swing|draw|ophaal|klap|movable|opening/.test(typeTxt);
-  if (/vast|fixed/.test(typeTxt) && open == null) movable = false;
-  for (const k of Object.keys(all)) if (/^(canopen|ismovable|movable)$/i.test(k)) {
-    const v = all[k]; movable = v === true || v === 1 || /^(true|ja|yes|1|y)$/i.test(String(v));
+  // Beweegbaar: het type van de doorvaartopening (VST = vast), anders 'canopen' van de brug.
+  let movable;
+  if (a.type != null && src === "opening") movable = !/^(VST|VAST|FIXED)$/i.test(String(a.type));
+  else {
+    const typeTxt = `${str(all, [/type|soort|category|catbrg/i])} ${str(all, [/canopen|movable|beweeg/i])}`.toLowerCase();
+    movable = open != null || /beweeg|bascul|draai|hef|lift|swing|draw|ophaal|klap|movable|^yes$|\byes\b/.test(typeTxt);
+    if (/vast|fixed|\bvst\b/.test(typeTxt) && open == null) movable = false;
   }
-  const name = str(all, [/^name$|^naam$|objectnaam|bridgename|brugnaam/i, /name|naam/i]) || "Brug zonder naam";
-  const waterway = str(all, [/fairwayname|vaarwegnaam|waterwayname/i, /fairway|vaarweg|waterway/i]);
-  const id = all.Id ?? all.ID ?? all.id ?? all.Isrs ?? null;
+
+  const pName = parent?.name || parent?.Name;
+  let name = pName || str(all, [/^name$|^naam$|objectnaam|bridgename|brugnaam/i]) || "Brug zonder naam";
+  if (pName && (parent.numberofopenings || 0) > 1 && a.number != null) name += ` · opening ${a.number}`;
+  const place = str(all, [/^city$|^plaats$|^woonplaats$/i]);
+  const id = a.id ?? a.Id ?? all.id ?? all.Id ?? all.isrsid ?? null;
   return {
-    id, lat: p[0], lng: p[1], name, waterway,
+    id, lat: p[0], lng: p[1], name, waterway: place,
     closed, open, movable: movable ? 1 : 0,
-    underNAP, refNAP, refName: refName || undefined,
+    underNAP, openUnderNAP, mhw, refNAP, refName: refName || undefined,
     src, a: all,
   };
 }

@@ -1,6 +1,6 @@
 // Service worker: app werkt ook met slecht of geen bereik op het water.
 // App-bestanden: eerst cache. Data (data/): eerst netwerk, bij geen verbinding de laatst bekende versie.
-const VERSION = "bh-v2";
+const VERSION = "bh-v3";
 const SHELL = ["./", "index.html", "app.css", "app.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {
