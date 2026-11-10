@@ -19,6 +19,10 @@ on:
         description: "Brug opzoeken in het logboek (deel van naam of plaats)"
         type: string
         default: ""
+      inspect:
+        description: "Onderhoud: FIS-lagen inspecteren (laagnummers, komma-gescheiden)"
+        type: string
+        default: ""
 
 permissions:
   contents: write   # alleen voor de maandelijkse 'keepalive'-commit
@@ -55,6 +59,12 @@ jobs:
           ls -la _site/data
           echo "live water.json generatedAt: $(node -e 'try{console.log(require("./_site/data/water.json").generatedAt)}catch(e){console.log("geen")}')"
           echo "live water.json via curl headers:"; curl -sI --max-time 30 "$SITE/data/water.json" | grep -iE "^(last-modified|cache-control|age|date):" || true
+
+      - name: FIS-lagen inspecteren
+        if: inputs.inspect != ''
+        env:
+          INSPECT: ${{ inputs.inspect }}
+        run: node scripts/inspect.mjs
 
       - name: Data bijwerken bij Rijkswaterstaat
         env:
