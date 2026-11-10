@@ -717,7 +717,7 @@ function updateView() {
     const el = document.createElement("div");
     el.className = "item"; el.tabIndex = 0;
     el.innerHTML = `<span class="h${cur ? " cur" : ""}" style="background:${colorOf(d.s)}">${fmt(effClosed(b))}</span>
-      <div style="min-width:0"><div class="n">${esc(b.name)}</div><div class="m">${b.movable ? "beweegbaar" : "vast"}${cur ? (offsetH() ? " · verwacht" : " · actueel") : ""}${b.waterway ? " · " + esc(b.waterway) : ""}</div></div>`;
+      <div style="min-width:0"><div class="n">${esc(b.name)}</div><div class="m">${b.movable ? "beweegbaar" : "vast"}${cur ? (offsetH() ? " · verwacht" : " · actueel") : ""}${b.lvl ? ` · water <b>${signed(b.lvl.cm)} cm NAP</b>` : ""}${b.waterway ? " · " + esc(b.waterway) : ""}</div></div>`;
     const go = () => { map.setView([b.lat, b.lng], Math.max(map.getZoom(), 15)); setTimeout(() => b._m?.openPopup(), 350); if (innerWidth <= 760) $("map").scrollIntoView(); };
     el.onclick = go; el.onkeydown = (e) => { if (e.key === "Enter") go(); };
     items.appendChild(el);
