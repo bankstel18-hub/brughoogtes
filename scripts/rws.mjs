@@ -673,12 +673,17 @@ export async function runForecastUpdate(budgetMs = 120000) {
 
   // Voor de app: per meetpunt de beste toekomstreeks per uur (verwachting, anders astronomisch).
   const series = {};
+  const hist = (await s.get("hist")) || {};
   for (const x of st.stations) {
     const f = fc10[x.code], a = astro[x.code];
     if (f?.pts?.length) series[x.code] = { kind: "verwachting", at: f.at, pts: hourly(trim(f.pts, nowS - 3600)) };
     else if (a?.pts?.length) series[x.code] = { kind: "astronomisch", at: a.at, pts: hourly(trim(a.pts, nowS - 3600)) };
+    // recente metingen (laatste 8 uur, per 20 minuten) voor het schatten tussen meetpunten
+    const h = trim(hist[x.code]?.pts || [], nowS - 8 * 3600).filter(([t]) => Math.round(t / 60) % 20 === 0);
+    if (h.length) (series[x.code] ||= { kind: null, pts: [] }).past = h;
   }
-  const payload = { generatedAt: new Date().toISOString(), source: "Rijkswaterstaat WaterWebservices (verwachting / astronomisch getij)", count: Object.keys(series).length, series };
+  const payload = { generatedAt: new Date().toISOString(), source: "Rijkswaterstaat WaterWebservices (verwachting / astronomisch getij)", count: Object.keys(series).length, series,
+    lags: Object.fromEntries(Object.entries((await s.get("lags")) || {}).filter(([, v]) => v.ok).map(([k, v]) => [k, v.lag])) };
   await s.setJSON("forecast", payload);
   await s.setJSON("debug-forecast", { at: payload.generatedAt, sample: debugSample, errors, jobs: jobs.length });
   await setStatus("forecast", { completedAt: payload.generatedAt, processed: done, of: jobs.length, series: payload.count, error: errors.length ? errors.join(" | ") : null });
@@ -800,28 +805,84 @@ export function linkViaNetwork(net, bridges, stations, { maxKm = 25, maxSnapKm =
     if (sid) f = snapToPath([b.lat, b.lng], S[sid].path)?.f ?? 0.5;
     else { const r = snapNearest([b.lat, b.lng]); if (r && r.d <= 0.3) { sid = r.id; f = r.f; viaFallback++; } }
     if (!sid) { b.sts = []; noSection++; continue; }
-    const found = new Map();   // code -> km
-    const take = (code, km) => { if (km <= maxKm && (!found.has(code) || km < found.get(code))) found.set(code, km); };
+    const found = new Map();   // code -> { km, side }  (side: kant van de brug waarlangs het meetpunt bereikt is)
+    const take = (code, km, side) => { if (km <= maxKm && (!found.has(code) || km < found.get(code).km)) found.set(code, { km, side }); };
     const sec0 = S[sid], L0 = sec0.len || 0;
     // meetpunten op het eigen vak
-    for (const m of onSec[sid] || []) if (!blocked(sid, f, m.f)) take(m.code, Math.abs(m.f - f) * L0 + m.off);
+    for (const m of onSec[sid] || []) if (!blocked(sid, f, m.f)) take(m.code, Math.abs(m.f - f) * L0 + m.off, m.f < f ? "s" : "e");
     // Dijkstra over knooppunten
-    const dist = new Map(), pq = new Heap();
-    const push = (j, d) => { if (d <= maxKm && (!dist.has(j) || d < dist.get(j))) { dist.set(j, d); pq.push([d, j]); } };
-    if (!blocked(sid, f, 0)) push(sec0.s, f * L0);
-    if (!blocked(sid, f, 1)) push(sec0.e, (1 - f) * L0);
+    const dist = new Map(), side = new Map(), pq = new Heap();
+    const push = (j, d, sd) => { if (d <= maxKm && (!dist.has(j) || d < dist.get(j))) { dist.set(j, d); side.set(j, sd); pq.push([d, j]); } };
+    if (!blocked(sid, f, 0)) push(sec0.s, f * L0, "s");
+    if (!blocked(sid, f, 1)) push(sec0.e, (1 - f) * L0, "e");
     while (pq.size) {
       const [d, j] = pq.pop();
       if (d > dist.get(j)) continue;
+      const sd = side.get(j);
       for (const id of adj[j] || []) {
         if (id === sid) continue;
         const sec = S[id], from = sec.s === j ? 0 : 1, L = sec.len || 0;
-        for (const m of onSec[id] || []) if (!blocked(id, from, m.f)) take(m.code, d + Math.abs(m.f - from) * L + m.off);
-        if (!blocked(id, 0, 1)) push(from === 0 ? sec.e : sec.s, d + L);
+        for (const m of onSec[id] || []) if (!blocked(id, from, m.f)) take(m.code, d + Math.abs(m.f - from) * L + m.off, sd);
+        if (!blocked(id, 0, 1)) push(from === 0 ? sec.e : sec.s, d + L, sd);
       }
     }
-    b.sts = [...found.entries()].sort((x, y) => x[1] - y[1]).slice(0, keep).map(([c, km]) => [c, +km.toFixed(1)]);
+    // De drie dichtstbijzijnde, plus de twee dichtstbijzijnde aan elke kant (voor schatten tussen twee meetpunten).
+    const all = [...found.entries()].sort((x, y) => x[1].km - y[1].km);
+    const pickSet = new Set(all.slice(0, keep).map(([c]) => c));
+    for (const sd of ["s", "e"]) all.filter(([, v]) => v.side === sd).slice(0, 2).forEach(([c]) => pickSet.add(c));
+    b.sts = all.filter(([c]) => pickSet.has(c)).map(([c, v]) => [c, +v.km.toFixed(1), v.side]);
     if (b.sts.length) linked++;
   }
   return { meetpuntenOpNetwerk: placed, van: stations.length, bruggenGekoppeld: linked, van2: bridges.length, zonderVak: noSection, vakOpAfstand: viaFallback };
+}
+
+
+/* ---------------- looptijd van de getij-/hoogwatergolf tussen twee meetpunten ---------------- */
+// Zoekt de tijdsverschuiving (in minuten) waarbij reeks B het best overeenkomt met reeks A.
+// Positief: B loopt achter op A (de golf komt eerst bij A).
+function bestLag(ptsA, ptsB, maxMin = 360, stepMin = 10) {
+  if (!ptsA?.length || !ptsB?.length) return null;
+  const step = stepMin * 60;
+  const grid = (pts) => { const m = new Map(); for (const [t, v] of pts) m.set(Math.round(t / step), v); return m; };
+  const A = grid(ptsA), B = grid(ptsB);
+  let best = null;
+  for (let k = -maxMin / stepMin; k <= maxMin / stepMin; k++) {
+    let n = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+    for (const [i, a] of A) { const b = B.get(i + k); if (b == null) continue; n++; sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b; }
+    if (n < 72) continue;                                  // minstens 12 uur overlap
+    const va = saa - (sa * sa) / n, vb = sbb - (sb * sb) / n;
+    if (va <= 0 || vb <= 0) continue;
+    const r = (sab - (sa * sb) / n) / Math.sqrt(va * vb);
+    if (!best || r > best.r) best = { r, lag: k * stepMin, n, sdA: Math.sqrt(va / n), sdB: Math.sqrt(vb / n) };
+  }
+  return best;
+}
+export async function computeLags(bridges) {
+  const s = store();
+  const astro = (await s.get("astro")) || {}, hist = (await s.get("hist")) || {}, fc10 = (await s.get("fc10")) || {};
+  const prev = (await s.get("lags")) || {};
+  const pairs = new Set();
+  for (const b of bridges) {
+    const S = (b.sts || []).filter((x) => x[2] === "s").slice(0, 2), E = (b.sts || []).filter((x) => x[2] === "e").slice(0, 2);
+    for (const a of S) for (const e of E) if (a[1] + e[1] <= 40) pairs.add([a[0], e[0]].sort().join("|"));
+  }
+  const out = {};
+  let fresh = 0, reused = 0, ok = 0;
+  for (const key of pairs) {
+    const p = prev[key];
+    if (p && Date.now() - Date.parse(p.at) < 12 * 3600e3) { out[key] = p; reused++; if (p.ok) ok++; continue; }
+    const [a, b] = key.split("|");
+    let basis = "astronomisch", r = bestLag(astro[a]?.pts, astro[b]?.pts);
+    if (!r || r.r < 0.95) {
+      const comb = (c) => mergePts(hist[c]?.pts || [], fc10[c]?.pts || []);
+      const r2 = bestLag(comb(a), comb(b));
+      if (r2 && (!r || r2.r > r.r)) { r = r2; basis = "meting en verwachting"; }
+    }
+    // Betrouwbaar: hoge overeenkomst, niet aan de rand van het zoekbereik, en de reeksen variëren echt (getij of golf).
+    const good = !!r && r.r >= 0.9 && Math.abs(r.lag) < 360 && Math.min(r.sdA, r.sdB) >= 5;
+    out[key] = { at: new Date().toISOString(), lag: good ? r.lag : 0, r: r ? +r.r.toFixed(3) : null, ok: good, basis: good ? basis : "geen" };
+    fresh++; if (good) ok++;
+  }
+  await s.setJSON("lags", out);
+  return { paren: pairs.size, nieuwBerekend: fresh, hergebruikt: reused, metLooptijd: ok };
 }

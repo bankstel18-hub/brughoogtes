@@ -2,7 +2,7 @@
 //   node scripts/update.mjs <datamap> [bruggen] [--force-bruggen]
 // Waterstanden en verwachtingen worden altijd bijgewerkt; bruggen hooguit eens per ~20 uur
 // (of altijd met --force-bruggen).
-import { setDataDir, runWaterUpdate, runForecastUpdate, runHistoryBackfill, writeSeriesFiles, runBridgeJob, runLockJob, runNetworkJob, linkViaNetwork, getStatus, store } from "./rws.mjs";
+import { setDataDir, runWaterUpdate, runForecastUpdate, runHistoryBackfill, writeSeriesFiles, runBridgeJob, runLockJob, runNetworkJob, linkViaNetwork, computeLags, getStatus, store } from "./rws.mjs";
 
 const [dir = "data", ...flags] = process.argv.slice(2);
 setDataDir(dir);
@@ -50,6 +50,9 @@ await step("koppeling meetpunten", async () => {
   await store().setJSON("bridges", brp);
   return { ...r, seconden: ((Date.now() - t0) / 1000).toFixed(1) };
 });
+await step("looptijden tussen meetpunten", async () => computeLags((await store().get("bridges"))?.bridges || []));
+// verwachtingen opnieuw wegschrijven met de looptijden erin (geen extra verzoeken bij RWS)
+await step("verwachtingen bijwerken met looptijden", () => runForecastUpdate(-1));
 await step("grafiekbestanden", () => writeSeriesFiles());
 
 // Samenvatting van de sluisdata in het logboek.
