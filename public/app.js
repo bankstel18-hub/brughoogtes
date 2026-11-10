@@ -166,9 +166,30 @@ async function init() {
     setStatus(`Brugdata niet beschikbaar: ${e.message}`, true);
     $("freshness").textContent = "Gegevens worden voorbereid. Probeer het over een paar minuten opnieuw.";
   }
-  setInterval(async () => { await Promise.all([loadWater(), loadForecast()]); linkStations(); draw(); fresh(); }, 5 * 60e3);
+  setInterval(() => refreshData(false), 5 * 60e3);
+  // Terug in de app (tabblad of app weer geopend, verbinding terug): meteen verversen.
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshData(true); });
+  addEventListener("pageshow", (e) => { if (e.persisted) refreshData(true); });
+  addEventListener("online", () => refreshData(true));
+}
+let refreshing = null, lastRefresh = Date.now();
+async function refreshData(onResume) {
+  if (refreshing) return refreshing;
+  if (onResume && Date.now() - lastRefresh < 60e3) return;        // net ververst
+  $("freshness").textContent = "Gegevens bijwerken…";
+  $("staleWarn").hidden = true;
+  refreshing = (async () => {
+    const tasks = [loadWater(), loadForecast()];
+    if (meta.bridgesAt && Date.now() - Date.parse(meta.bridgesAt) > 20 * 3600e3) tasks.push(loadBridges().catch(() => {}), loadLocks());
+    await Promise.all(tasks);
+    seriesCache.clear();
+    lastRefresh = Date.now();
+    linkStations(); draw(); fresh();
+  })().finally(() => { refreshing = null; });
+  return refreshing;
 }
 function staleCheck() {
+  if (refreshing) return;
   const w = meta.waterAt ? (Date.now() - Date.parse(meta.waterAt)) / 60000 : Infinity;
   const el = $("staleWarn");
   if (w > 30) {

@@ -104,6 +104,11 @@ jobs:
             --jq "[.workflow_runs[] | select((.status==\"queued\" or .status==\"in_progress\" or .status==\"waiting\" or .status==\"pending\") and .id != $SELF)] | length")
           echo "andere actieve runs: $active"
           if [ "$active" = "0" ]; then
-            gh api -X POST "repos/$REPO/actions/workflows/update.yml/dispatches" -f ref=main
-            echo "volgende update gestart"
+            for i in 1 2 3 4 5; do
+              if gh api -X POST "repos/$REPO/actions/workflows/update.yml/dispatches" -f ref=main; then
+                echo "volgende update gestart"; exit 0
+              fi
+              echo "starten mislukt (poging $i), opnieuw over 20 s"; sleep 20
+            done
+            exit 1
           fi
