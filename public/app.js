@@ -135,8 +135,11 @@ function linkStations() {
       if (sideP && sideQ && sideP[1] <= 15 && sideQ[1] <= 15 && sideP[1] + sideQ[1] >= 0.5) {
         const P = byCode.get(sideP[0]), Q = byCode.get(sideQ[0]);
         const key = [P.code, Q.code].sort().join("|"), lag = lags[key];
-        const tau = lag == null ? 0 : key.startsWith(P.code + "|") ? lag : -lag;
-        b.pair = { P, Q, dP: sideP[1], dQ: sideQ[1], x: sideP[1] / (sideP[1] + sideQ[1]), tau, lagKnown: lag != null };
+        // Alleen als de twee meetpunten aantoonbaar samenhangen (of beide vrijwel stil staan); anders dichtstbijzijnde meetpunt.
+        if (lag != null) {
+          const tau = key.startsWith(P.code + "|") ? lag : -lag;
+          b.pair = { P, Q, dP: sideP[1], dQ: sideQ[1], x: sideP[1] / (sideP[1] + sideQ[1]), tau, lagKnown: lag !== 0 };
+        }
       }
       b.lvl = bridgeLevel(b);
       b.cur = currentClearance(b);
@@ -538,7 +541,7 @@ function pairTxt(b) {
   const first = p.tau >= 0 ? p.P : p.Q, second = p.tau >= 0 ? p.Q : p.P;
   return `tussen ${esc(p.P.name)} (${kmTxt(p.dP)} km) en ${esc(p.Q.name)} (${kmTxt(p.dQ)} km), over het water`
     + (p.lagKnown ? (t >= 5 ? `. De golf doet ${t} minuten over ${esc(first.name)} naar ${esc(second.name)}; daarmee is rekening gehouden.` : ". De waterstand loopt bij beide meetpunten vrijwel gelijk op.")
-      : ". Looptijd van de golf niet betrouwbaar te bepalen, daarom alleen naar afstand gewogen.");
+      : ". Beide waterstanden variëren nauwelijks, daarom naar afstand gewogen.");
 }
 function bridgeWl(b) {
   const lv = b.lvl, mn = minAhead(b);

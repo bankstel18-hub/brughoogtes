@@ -683,7 +683,8 @@ export async function runForecastUpdate(budgetMs = 120000) {
     if (h.length) (series[x.code] ||= { kind: null, pts: [] }).past = h;
   }
   const payload = { generatedAt: new Date().toISOString(), source: "Rijkswaterstaat WaterWebservices (verwachting / astronomisch getij)", count: Object.keys(series).length, series,
-    lags: Object.fromEntries(Object.entries((await s.get("lags")) || {}).filter(([, v]) => v.ok).map(([k, v]) => [k, v.lag])) };
+    // Alleen paren die bruikbaar zijn om tussen te schatten (looptijd in minuten; 0 bij "beide vlak").
+    lags: Object.fromEntries(Object.entries((await s.get("lags")) || {}).filter(([, v]) => v.use).map(([k, v]) => [k, v.lag])) };
   await s.setJSON("forecast", payload);
   await s.setJSON("debug-forecast", { at: payload.generatedAt, sample: debugSample, errors, jobs: jobs.length });
   await setStatus("forecast", { completedAt: payload.generatedAt, processed: done, of: jobs.length, series: payload.count, error: errors.length ? errors.join(" | ") : null });
@@ -870,7 +871,7 @@ export async function computeLags(bridges, { force = false } = {}) {
   let fresh = 0, reused = 0, ok = 0;
   for (const key of pairs) {
     const p = prev[key];
-    if (!force && p && Date.now() - Date.parse(p.at) < 12 * 3600e3) { out[key] = p; reused++; if (p.ok) ok++; continue; }
+    if (!force && p && "use" in p && Date.now() - Date.parse(p.at) < 12 * 3600e3) { out[key] = p; reused++; if (p.ok) ok++; reasons[p.why] = (reasons[p.why] || 0) + 1; continue; }
     const [a, b] = key.split("|");
     let basis = "astronomisch", r = bestLag(astro[a]?.pts, astro[b]?.pts);
     if (!r || r.r < 0.95) {
@@ -879,11 +880,17 @@ export async function computeLags(bridges, { force = false } = {}) {
       if (r2 && (!r || r2.r > r.r)) { r = r2; basis = "meting en verwachting"; }
     }
     // Betrouwbaar: hoge overeenkomst, niet aan de rand van het zoekbereik, en de reeksen variëren echt (getij of golf).
-    const good = !!r && r.r >= 0.9 && Math.abs(r.lag) < 360 && Math.min(r.sdA, r.sdB) >= 5;
-    const why = !r ? (astro[a]?.pts?.length && astro[b]?.pts?.length ? "te weinig overlap" : "geen reeksen") : r.r < 0.9 ? "lage overeenkomst" : Math.abs(r.lag) >= 360 ? "rand zoekbereik" : Math.min(r.sdA, r.sdB) < 5 ? "geen variatie" : "ok";
+    // Bruikbaar voor schatten tussen twee meetpunten:
+    //  - "ok": duidelijke samenhang (getij of golf) met een betrouwbare looptijd
+    //  - "beide vlak": beide standen variëren nauwelijks (rivier/kanaal zonder getij), alleen naar afstand wegen
+    // Varieert de één wel en de ander niet, of is de samenhang zwak: waarschijnlijk geen open verbinding, niet gebruiken.
+    const flat = !!r && Math.max(r.sdA, r.sdB) < 5;
+    const good = !!r && !flat && r.r >= 0.9 && Math.abs(r.lag) < 360 && Math.min(r.sdA, r.sdB) >= 5;
+    const why = !r ? (astro[a]?.pts?.length && astro[b]?.pts?.length ? "te weinig overlap" : "geen reeksen") : flat ? "beide vlak"
+      : Math.min(r.sdA, r.sdB) < 5 ? "een vlak, een niet (vermoedelijk gescheiden)" : r.r < 0.9 ? "lage overeenkomst" : Math.abs(r.lag) >= 360 ? "rand zoekbereik" : "ok";
     reasons[why] = (reasons[why] || 0) + 1;
     if (why !== "ok" && samples.length < 8 && (astro[a]?.pts?.length || astro[b]?.pts?.length)) samples.push({ key, why, r: r && +r.r.toFixed(2), lag: r?.lag, sd: r && [Math.round(r.sdA), Math.round(r.sdB)], astro: [astro[a]?.pts?.length || 0, astro[b]?.pts?.length || 0], hist: [hist[a]?.pts?.length || 0, hist[b]?.pts?.length || 0], fc: [fc10[a]?.pts?.length || 0, fc10[b]?.pts?.length || 0] });
-    out[key] = { at: new Date().toISOString(), lag: good ? r.lag : 0, r: r ? +r.r.toFixed(3) : null, ok: good, basis: good ? basis : "geen", why };
+    out[key] = { at: new Date().toISOString(), lag: good ? r.lag : 0, r: r ? +r.r.toFixed(3) : null, ok: good, use: good || flat, basis: good ? basis : flat ? "beide vlak" : "geen", why };
     fresh++; if (good) ok++;
   }
   await s.setJSON("lags", out);
