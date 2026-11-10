@@ -53,7 +53,7 @@ jobs:
         run: |
           mkdir -p _site/data
           cp -r public/. _site/
-          for f in bridges locks stations forecast water status hist fc10 astro debug-bridges debug-locks debug-water debug-forecast; do
+          for f in bridges locks network stations forecast water status hist fc10 astro debug-bridges debug-locks debug-water debug-forecast; do
             curl -sfL --max-time 60 "$SITE/data/$f.json" -o "_site/data/$f.json" || rm -f "_site/data/$f.json"
           done
           ls -la _site/data
@@ -73,7 +73,7 @@ jobs:
 
       - name: Tijdelijke bestanden opruimen
         if: always()
-        run: rm -f _site/data/bridgejob.json _site/data/bj__*.json _site/data/lockjob.json _site/data/lj__*.json
+        run: rm -f _site/data/bridgejob.json _site/data/bj__*.json _site/data/lockjob.json _site/data/lj__*.json _site/data/netjob.json _site/data/nj__*.json
 
       - uses: actions/upload-pages-artifact@v3
         if: always()

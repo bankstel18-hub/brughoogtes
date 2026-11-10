@@ -2,7 +2,7 @@
 //   node scripts/update.mjs <datamap> [bruggen] [--force-bruggen]
 // Waterstanden en verwachtingen worden altijd bijgewerkt; bruggen hooguit eens per ~20 uur
 // (of altijd met --force-bruggen).
-import { setDataDir, runWaterUpdate, runForecastUpdate, runHistoryBackfill, writeSeriesFiles, runBridgeJob, runLockJob, getStatus, store } from "./rws.mjs";
+import { setDataDir, runWaterUpdate, runForecastUpdate, runHistoryBackfill, writeSeriesFiles, runBridgeJob, runLockJob, runNetworkJob, linkViaNetwork, getStatus, store } from "./rws.mjs";
 
 const [dir = "data", ...flags] = process.argv.slice(2);
 setDataDir(dir);
@@ -35,6 +35,21 @@ await step("sluizen", async () => {
   return r;
 });
 
+await step("vaarwegennetwerk", async () => {
+  let r = await runNetworkJob(240000, { force });
+  while (r && r.done === false) r = await runNetworkJob(240000);
+  return r;
+});
+// Bruggen koppelen aan meetpunten over het water (sluizen en stuwen scheiden de wateren).
+await step("koppeling meetpunten", async () => {
+  const brp = await store().get("bridges"), net = (await store().get("network"))?.network, st = await store().get("stations");
+  if (!brp?.bridges?.length || !net?.sections || !st?.stations?.length) return { skipped: true, reason: "netwerk, bruggen of meetpunten ontbreken" };
+  const t0 = Date.now();
+  const r = linkViaNetwork(net, brp.bridges, st.stations);
+  brp.linkedAt = new Date().toISOString();
+  await store().setJSON("bridges", brp);
+  return { ...r, seconden: ((Date.now() - t0) / 1000).toFixed(1) };
+});
 await step("grafiekbestanden", () => writeSeriesFiles());
 
 // Samenvatting van de sluisdata in het logboek.

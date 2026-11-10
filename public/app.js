@@ -84,8 +84,16 @@ function linkStations() {
   const grid = new Map();
   const key = (lat, lng) => `${Math.floor(lat / 0.2)}|${Math.floor(lng / 0.2)}`;
   for (const s of fresh) { const k = key(s.lat, s.lng); (grid.get(k) || grid.set(k, []).get(k)).push(s); }
+  const byCode = new Map(stations.map((s) => [s.code, s]));
   for (const b of bridges) {
-    b.st = null; b.stKm = null;
+    b.st = null; b.stKm = null; b.stNet = false;
+    // Gekoppeld via het vaarwegennetwerk: eerste meetpunt met actuele gegevens, zonder sluis of stuw ertussen.
+    if (Array.isArray(b.sts)) {
+      for (const [code, kmNet] of b.sts) { const s = byCode.get(code); if (s && s.lvl) { b.st = s; b.stKm = kmNet; b.stNet = true; break; } }
+      b.cur = currentClearance(b);
+      continue;
+    }
+    // Oude data zonder netwerkkoppeling: dichtstbijzijnde meetpunt hemelsbreed.
     const gy = Math.floor(b.lat / 0.2), gx = Math.floor(b.lng / 0.2);
     let best = null, bd = Infinity;
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
@@ -116,7 +124,7 @@ const effOpen = (b) => {
   if (b.openUnderNAP != null && b.st?.lvl) return +(b.openUnderNAP - b.st.lvl.cm / 100).toFixed(2);
   return b.closed != null ? +(b.open + (b.cur - b.closed)).toFixed(2) : b.open;
 };
-const REF = { KP: "kanaalpeil", NAP: "NAP", MP: "meerpeil", SP: "streefpeil", PP: "polderpeil", BP: "boezempeil", UNSPECIFIED: "referentiepeil" };
+const REF = { KP: "kanaalpeil", NAP: "NAP", MP: "meerpeil", SP: "streefpeil", PP: "polderpeil", BP: "boezempeil", UNSPECIFIED: "een onbekend referentiepeil" };
 const refTxt = (b) => b.mhw != null
   ? `bij maatgevend hoogwater (${signed(Math.round(b.mhw * 100))} cm NAP)`
   : `t.o.v. ${REF[b.refName] || b.refName || "referentiepeil"}`;
@@ -453,19 +461,22 @@ function bridgeHead(b) {
 function bridgeWl(b) {
   const lv = b.st.lvl, mn = minAhead(b);
   if (!lv) return `<div class="wl">Geen waterstand beschikbaar voor ${whenTxt()} bij ${esc(b.st.name)}.</div>`;
-  return `<div class="wl">Waterstand ${esc(b.st.name)} (${b.stKm.toFixed(1)} km), ${kindTxt(lv.kind)} ${whenTxt()}: <b>${signed(lv.cm)} cm NAP</b>`
+  const where = b.stNet ? `${b.stKm.toFixed(1).replace(".", ",")} km over het water, open verbinding` : `${b.stKm.toFixed(1).replace(".", ",")} km hemelsbreed`;
+  return `<div class="wl">Waterstand ${esc(b.st.name)} (${where}), ${kindTxt(lv.kind)} ${whenTxt()}: <b>${signed(lv.cm)} cm NAP</b>`
       + (b.cur != null
         ? `<br>Doorvaarthoogte ${whenTxt()}: <b>${fmt(b.cur)} m</b> (${refTxt(b)}: ${fmt(b.closed)} m)`
           + (mn ? `<br>Laagste verwachte hoogte komende 48 uur: <b>${fmt(mn.c)} m</b> op ${new Date(mn.t * 1000).toLocaleString("nl-NL", { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : "")
-        : `<br>${b.mhw == null && b.refName && b.refName !== "UNSPECIFIED" ? `De hoogte van deze brug geldt ${refTxt(b)}, een geregeld peil. Daarom wordt niet gecorrigeerd met meetpunten van Rijkswaterstaat.` : "Voor deze brug ontbreekt een NAP-referentie in de brondata, dus de hoogte is niet automatisch gecorrigeerd."}`)
+        : `<br>${b.mhw == null && b.refName && b.refName !== "UNSPECIFIED" ? `De hoogte van deze brug geldt ${refTxt(b)}, een geregeld peil. Daarom wordt niet gecorrigeerd met meetpunten van Rijkswaterstaat.` : "Het referentiepeil van deze hoogte ontbreekt in de brondata van Rijkswaterstaat. Daarom is niet omgerekend; vergelijk de waterstand zelf met de hoogteschaal ter plaatse."}`)
       + `</div>`;
 }
 function popupBridge(b) {
   const usingCur = $("useWater").checked && b.cur != null;
   const rows = Object.entries(b.a || {}).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("");
   let wl = "";
-  if (b.st && b.st.lvl && (b.mhw != null || b.underNAP != null || b.refNAP != null)) {
+  if (b.st && b.st.lvl) {
     wl = `<div class="popwl">${bridgeWl(b)}</div>${chartBlock(b.st, b)}`;
+  } else if (Array.isArray(b.sts) && (b.underNAP != null || b.mhw != null)) {
+    wl = `<div class="wl">Geen meetpunt van Rijkswaterstaat met actuele gegevens binnen 25 km over het water zonder sluis of stuw ertussen. De hoogte is daarom niet omgerekend.</div>`;
   }
   return `<div class="pop"><h3>${esc(b.name)}</h3>
     ${b.waterway ? `<div class="note" style="margin:0">${esc(b.waterway)}</div>` : ""}

@@ -81,8 +81,16 @@ export const FIS_DS = "https://www.vaarweginformatie.nl/wfswms/dataservice/1.4";
 const JOBS = {
   bridges: {
     label: "bruggen", jobKey: "bridgejob", prefix: "bj/", out: "bridges", debugKey: "debug-bridges",
-    roles: [{ role: "bridge", re: /bridge|brug/i, ds: "bridge" }, { role: "opening", re: /opening/i, ds: "opening" }],
-    build: (r) => assemble(r.bridge || [], r.opening || []),
+    roles: [{ role: "bridge", re: /^brug$|bridge/i, ds: "bridge" }, { role: "opening", re: /^opening$/i, ds: "opening" },
+            { role: "complex", re: /^kunstwerkcomplex$/i, ds: "exceptionalnavigationalstructure" }],
+    build: (r) => assemble(r.bridge || [], r.opening || [], r.complex || []),
+  },
+  network: {
+    label: "vaarwegennetwerk", jobKey: "netjob", prefix: "nj/", out: "network", debugKey: "debug-network",
+    // Vaarwegvakken met geometrie, plus sluizen en kunstwerken (stuwen) als scheiding tussen wateren.
+    roles: [{ role: "section", re: /^vaarwegvak$/i, ds: "section", geom: true }, { role: "lock", re: /^sluis$/i, ds: "lock" },
+            { role: "complex", re: /^kunstwerkcomplex$/i, ds: "exceptionalnavigationalstructure" }],
+    build: (r) => buildNetwork(r.section || [], r.lock || [], r.complex || []),
   },
   locks: {
     label: "sluizen", jobKey: "lockjob", prefix: "lj/", out: "locks", debugKey: "debug-locks",
@@ -104,22 +112,22 @@ async function planArcgis(base, cfg) {
     for (const l of candidates(r.re)) withCount.push({ l, n: await countOf(l) });
     withCount.sort((a, b) => b.n - a.n);
     const use = r.all ? withCount.filter((x) => x.n > 0) : withCount.slice(0, 1);
-    for (const { l } of use) chosen.push({ role: r.role, layer: l });
+    for (const { l } of use) chosen.push({ role: r.role, layer: l, geom: !!r.geom });
   }
   if (!chosen.length) throw new Error(`Geen lagen voor ${cfg.label} gevonden. Lagen: ` + layers.map((l) => l.name).join(", "));
   const tasks = [], meta = [];
-  for (const { role, layer } of chosen) {
+  for (const { role, layer, geom } of chosen) {
     const info = await getJSON(`${base}/${layer.id}?f=json`);
     const max = Math.min(info.maxRecordCount || 1000, 2000);
     const pag = !!info.advancedQueryCapabilities?.supportsPagination;
     meta.push({ source: base, role, id: layer.id, name: layer.name, fields: (info.fields || []).map((f) => `${f.name}:${f.type?.replace("esriFieldType", "")}`), max, pag });
     if (pag) {
       const c = await getJSON(`${base}/${layer.id}/query?where=1%3D1&returnCountOnly=true&f=json`);
-      for (let off = 0; off < (c.count || 0); off += max) tasks.push({ kind: "arcgis", base, role, id: layer.id, offset: off, n: max });
+      for (let off = 0; off < (c.count || 0); off += max) tasks.push({ kind: "arcgis", base, role, id: layer.id, offset: off, n: max, geom });
     } else {
       const ids = (await getJSON(`${base}/${layer.id}/query?where=1%3D1&returnIdsOnly=true&f=json`)).objectIds || [];
       const chunk = Math.min(max, 400);
-      for (let i = 0; i < ids.length; i += chunk) tasks.push({ kind: "arcgis", base, role, id: layer.id, ids: ids.slice(i, i + chunk) });
+      for (let i = 0; i < ids.length; i += chunk) tasks.push({ kind: "arcgis", base, role, id: layer.id, ids: ids.slice(i, i + chunk), geom });
     }
   }
   if (!tasks.length) throw new Error("Lagen gevonden maar zonder objecten");
@@ -172,7 +180,7 @@ async function runTask(t) {
     });
   }
   const base = t.base || FIS;
-  const q = { outFields: "*", outSR: "4326", returnGeometry: "true", f: "json" };
+  const q = { outFields: "*", outSR: "4326", returnGeometry: "true", f: "json", ...(t.geom ? { maxAllowableOffset: "0.0003" } : {}) };
   let j;
   if (t.ids) {
     j = await getJSON(`${base}/${t.id}/query`, { method: "POST", body: new URLSearchParams({ ...q, objectIds: t.ids.join(",") }) }, 30000);
@@ -185,7 +193,8 @@ async function runTask(t) {
       j = await getJSON(`${base}/${t.id}/query?${p}`, {}, 30000);
     }
   }
-  return (j.features || []).map((f) => ({ a: slim(f.attributes), p: geomPoint(f.geometry) }));
+  return (j.features || []).map((f) => ({ a: slim(f.attributes), p: geomPoint(f.geometry),
+    ...(t.geom ? { path: (f.geometry?.paths || []).flat().map(([x, y]) => [+y.toFixed(5), +x.toFixed(5)]) } : {}) }));
 }
 
 // Voert een FIS-taak (bruggen of sluizen) uit binnen een tijdsbudget; hervat bij de volgende aanroep.
@@ -243,6 +252,7 @@ async function runFisJob(cfg, budgetMs, { force = false } = {}) {
 
 export const runBridgeJob = (budgetMs = 8000, opts) => runFisJob(JOBS.bridges, budgetMs, opts);
 export const runLockJob = (budgetMs = 8000, opts) => runFisJob(JOBS.locks, budgetMs, opts);
+export const runNetworkJob = (budgetMs = 8000, opts) => runFisJob(JOBS.network, budgetMs, opts);
 
 /* --- veldherkenning: robuust tegen schemawijzigingen --- */
 function num(v) {
@@ -293,10 +303,15 @@ function normalize(a, p, parent, src) {
     const ho = height(all.heightopened), cho = height(all.clearanceheightopened);
     closed = minOf(hc, chc);
     open = minOf(ho, cho);
+    const ref = String(parent?.referencelevel ?? a.referencelevel ?? "").toUpperCase();
     if (/river/i.test(String(all.mhwreferencelevel || "")) && num(all.mhwoffset) != null) {
       mhw = +num(all.mhwoffset).toFixed(2);
       if (chc != null) underNAP = +(chc + mhw).toFixed(2);       // onderkant brug t.o.v. NAP
       if (cho != null) openUnderNAP = +(cho + mhw).toFixed(2);
+    } else if (ref === "NAP") {
+      // Referentiepeil NAP: heightclosed is de onderkant t.o.v. NAP (getoetst: 299 van 306 rivierbruggen).
+      if (hc != null) underNAP = hc;
+      if (ho != null) openUnderNAP = ho;
     }
   } else {
     closed = pick(a, RE_CLOSED, EX_CLOSED) ?? pick(parent, RE_CLOSED, EX_CLOSED);
@@ -304,7 +319,7 @@ function normalize(a, p, parent, src) {
     underNAP = pick(all, RE_UNDER_NAP, /open|width|breedte/i, navNum);
     refNAP = pick(all, RE_REF_NAP, null, navNum);
   }
-  const refName = str(all, RE_REF_NAME);
+  const refName = parent?.referencelevel || a.referencelevel || (hasFis ? "" : str(all, RE_REF_NAME));
 
   // Beweegbaar: het type van de doorvaartopening (VST = vast), anders 'canopen' van de brug.
   let movable;
@@ -319,17 +334,20 @@ function normalize(a, p, parent, src) {
   let name = pName || str(all, [/^name$|^naam$|objectnaam|bridgename|brugnaam/i]) || "Brug zonder naam";
   if (pName && (parent.numberofopenings || 0) > 1 && a.number != null) name += ` · opening ${a.number}`;
   const place = str(all, [/^city$|^plaats$|^woonplaats$/i]);
+  const sec = num(a.fairwaysectionid ?? parent?.fairwaysectionid);
   const id = a.id ?? a.Id ?? all.id ?? all.Id ?? all.isrsid ?? null;
   return {
     id, lat: p[0], lng: p[1], name, waterway: place,
     closed, open, movable: movable ? 1 : 0,
-    underNAP, openUnderNAP, mhw, refNAP, refName: refName || undefined,
+    underNAP, openUnderNAP, mhw, refNAP, refName: refName || undefined, sec: sec ?? undefined,
+    kind: a.parentgeotype === "exceptionalnavigationalstructure" ? "kunstwerk" : undefined,
     src, a: all,
   };
 }
 
-function assemble(bridgeFeats, openFeats) {
+function assemble(bridgeFeats, openFeats, complexFeats = []) {
   const res = [];
+  const cIndex = new Map(complexFeats.map((f) => [String(f.a.id), f]));
   const idKey = (a) => Object.keys(a).find((k) => /^id$/i.test(k)) || Object.keys(a).find((k) => /^(bridgeid|brugid|isrs|code)$/i.test(k));
   const bIndex = new Map();
   if (bridgeFeats.length) {
@@ -339,8 +357,9 @@ function assemble(bridgeFeats, openFeats) {
   const linkKey = openFeats.length ? Object.keys(openFeats[0].a).find((k) => /bridge.?id|parent.?id|brug.?id/i.test(k)) : null;
   const used = new Set();
   for (const f of openFeats) {
-    const parent = linkKey ? bIndex.get(String(f.a[linkKey])) : null;
-    if (parent) used.add(parent);
+    const isComplex = /exceptional/i.test(String(f.a.parentgeotype || ""));
+    const parent = linkKey ? (isComplex ? cIndex.get(String(f.a[linkKey])) : bIndex.get(String(f.a[linkKey]))) : null;
+    if (parent && !isComplex) used.add(parent);
     const p = f.p || parent?.p;
     if (!p) continue;
     res.push(normalize(f.a, p, parent?.a, "opening"));
@@ -690,4 +709,119 @@ export async function writeSeriesFiles() {
     n++;
   }
   return { bestanden: n };
+}
+
+/* ---------------- vaarwegennetwerk: meetpunten via open verbinding ---------------- */
+// Afstanden in km met een vlakke benadering (ruim nauwkeurig genoeg binnen Nederland).
+const KX = 111.32 * Math.cos((52 * Math.PI) / 180), KY = 110.57;
+const segDist = (p, a, b) => {           // afstand punt-lijnstuk en positie (0..1) op het lijnstuk
+  const ax = a[1] * KX, ay = a[0] * KY, bx = b[1] * KX, by = b[0] * KY, px = p[1] * KX, py = p[0] * KY;
+  const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+  const t = L2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L2)) : 0;
+  return { d: Math.hypot(px - (ax + t * dx), py - (ay + t * dy)), t };
+};
+// Plaatst een punt op een vaarwegvak: positie f (0..1) langs het vak en afstand tot het vak.
+function snapToPath(p, path) {
+  if (!path || path.length < 2) return null;
+  let tot = 0; const cum = [0];
+  for (let i = 1; i < path.length; i++) { tot += Math.hypot((path[i][1] - path[i - 1][1]) * KX, (path[i][0] - path[i - 1][0]) * KY); cum.push(tot); }
+  let best = { d: Infinity, f: 0 };
+  for (let i = 1; i < path.length; i++) {
+    const r = segDist(p, path[i - 1], path[i]);
+    if (r.d < best.d) best = { d: r.d, f: tot ? (cum[i - 1] + r.t * (cum[i] - cum[i - 1])) / tot : 0 };
+  }
+  return best;
+}
+
+// Bouwt het netwerk: vakken, knooppunten en scheidingen (sluizen, stuwen) per vak.
+function buildNetwork(sectionFeats, lockFeats, complexFeats) {
+  const sections = {};
+  for (const f of sectionFeats) {
+    const a = f.a;
+    if (a.id == null || a.startjunctionid == null || a.endjunctionid == null || !f.path?.length) continue;
+    sections[a.id] = { s: a.startjunctionid, e: a.endjunctionid, len: num(a.length) || 0, path: f.path };
+  }
+  const barriers = {};      // vak-id -> [posities 0..1]
+  const addBarrier = (f, kind) => {
+    const sid = num(f.a.fairwaysectionid), sec = sections[sid];
+    if (!sec || !f.p) return;
+    const sn = snapToPath(f.p, sec.path);
+    (barriers[sid] ||= []).push({ f: sn ? +sn.f.toFixed(4) : 0.5, kind, name: f.a.name || "" });
+  };
+  for (const f of lockFeats) addBarrier(f, "sluis");
+  for (const f of complexFeats) if (/^STW$/i.test(String(f.a.structuretype || ""))) addBarrier(f, "stuw");
+  const out = { sections, barriers };
+  out.stats = { sections: Object.keys(sections).length, sluizen: lockFeats.length, stuwen: complexFeats.filter((f) => /^STW$/i.test(String(f.a.structuretype || ""))).length,
+    vakkenMetScheiding: Object.keys(barriers).length };
+  return out;
+}
+
+class Heap {                      // kleine binaire heap op [afstand, knooppunt]
+  constructor() { this.h = []; }
+  get size() { return this.h.length; }
+  push(x) { const h = this.h; h.push(x); let i = h.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (h[p][0] <= h[i][0]) break; [h[p], h[i]] = [h[i], h[p]]; i = p; } }
+  pop() { const h = this.h, top = h[0], last = h.pop(); if (h.length) { h[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < h.length && h[l][0] < h[m][0]) m = l; if (r < h.length && h[r][0] < h[m][0]) m = r; if (m === i) break; [h[m], h[i]] = [h[i], h[m]]; i = m; } } return top; }
+}
+// Koppelt elke brug aan de dichtstbijzijnde meetpunten over het water (geen sluis of stuw ertussen).
+export function linkViaNetwork(net, bridges, stations, { maxKm = 25, maxSnapKm = 1.5, keep = 3 } = {}) {
+  const S = net.sections, B = net.barriers || {};
+  // Ruimtelijke index van vakken voor het plaatsen van meetpunten.
+  const cell = 0.05, grid = new Map(), key = (la, lo) => `${Math.floor(la / cell)}|${Math.floor(lo / cell)}`;
+  for (const [id, sec] of Object.entries(S)) {
+    const seen = new Set();
+    for (const p of sec.path) { const k = key(p[0], p[1]); if (!seen.has(k)) { seen.add(k); (grid.get(k) || grid.set(k, []).get(k)).push(id); } }
+  }
+  const nearSections = (p) => {
+    const gy = Math.floor(p[0] / cell), gx = Math.floor(p[1] / cell), ids = new Set();
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const id of grid.get(`${gy + dy}|${gx + dx}`) || []) ids.add(id);
+    return ids;
+  };
+  const snapNearest = (p) => {
+    let best = null;
+    for (const id of nearSections(p)) { const r = snapToPath(p, S[id].path); if (r && (!best || r.d < best.d)) best = { id, ...r }; }
+    return best;
+  };
+  // Meetpunten op het netwerk.
+  const onSec = {};
+  let placed = 0;
+  for (const st of stations) {
+    const r = snapNearest([st.lat, st.lng]);
+    if (!r || r.d > maxSnapKm) continue;
+    (onSec[r.id] ||= []).push({ code: st.code, f: r.f, off: r.d });
+    placed++;
+  }
+  const blocked = (sid, f1, f2) => (B[sid] || []).some((b) => b.f > Math.min(f1, f2) + 1e-4 && b.f < Math.max(f1, f2) - 1e-4);
+  const adj = {};
+  for (const [id, sec] of Object.entries(S)) { (adj[sec.s] ||= []).push(id); (adj[sec.e] ||= []).push(id); }
+
+  let linked = 0, noSection = 0, viaFallback = 0;
+  for (const b of bridges) {
+    let sid = b.sec != null && S[b.sec] ? String(b.sec) : null, f;
+    if (sid) f = snapToPath([b.lat, b.lng], S[sid].path)?.f ?? 0.5;
+    else { const r = snapNearest([b.lat, b.lng]); if (r && r.d <= 0.3) { sid = r.id; f = r.f; viaFallback++; } }
+    if (!sid) { b.sts = []; noSection++; continue; }
+    const found = new Map();   // code -> km
+    const take = (code, km) => { if (km <= maxKm && (!found.has(code) || km < found.get(code))) found.set(code, km); };
+    const sec0 = S[sid], L0 = sec0.len || 0;
+    // meetpunten op het eigen vak
+    for (const m of onSec[sid] || []) if (!blocked(sid, f, m.f)) take(m.code, Math.abs(m.f - f) * L0 + m.off);
+    // Dijkstra over knooppunten
+    const dist = new Map(), pq = new Heap();
+    const push = (j, d) => { if (d <= maxKm && (!dist.has(j) || d < dist.get(j))) { dist.set(j, d); pq.push([d, j]); } };
+    if (!blocked(sid, f, 0)) push(sec0.s, f * L0);
+    if (!blocked(sid, f, 1)) push(sec0.e, (1 - f) * L0);
+    while (pq.size) {
+      const [d, j] = pq.pop();
+      if (d > dist.get(j)) continue;
+      for (const id of adj[j] || []) {
+        if (id === sid) continue;
+        const sec = S[id], from = sec.s === j ? 0 : 1, L = sec.len || 0;
+        for (const m of onSec[id] || []) if (!blocked(id, from, m.f)) take(m.code, d + Math.abs(m.f - from) * L + m.off);
+        if (!blocked(id, 0, 1)) push(from === 0 ? sec.e : sec.s, d + L);
+      }
+    }
+    b.sts = [...found.entries()].sort((x, y) => x[1] - y[1]).slice(0, keep).map(([c, km]) => [c, +km.toFixed(1)]);
+    if (b.sts.length) linked++;
+  }
+  return { meetpuntenOpNetwerk: placed, van: stations.length, bruggenGekoppeld: linked, van2: bridges.length, zonderVak: noSection, vakOpAfstand: viaFallback };
 }
