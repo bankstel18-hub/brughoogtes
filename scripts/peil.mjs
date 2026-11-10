@@ -128,7 +128,7 @@ export function lineIndex(lines) {
 export function peilCompatible(pb, ps) {
   if (!pb || !ps) return { ok: true };
   const fb = pb.f || [], fs_ = ps.f || [];
-  if (fb.length && fs_.length && !fb.some((x) => fs_.includes(x))) return { ok: false, why: "fis" };
+  if (fb.length && fs_.length) return fb.some((x) => fs_.includes(x)) ? { ok: true } : { ok: false, why: "fis" };   // FIS beslist als beide een label hebben
   const binnen = (p) => p.w?.length && !p.w.includes(-1) && !(p.f || []).includes("T");
   if (binnen(pb) && binnen(ps) && !pb.w.some((x) => ps.w.includes(x))) return { ok: false, why: "waterschap" };
   return { ok: true };

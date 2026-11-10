@@ -43,6 +43,7 @@ await step("vaarwegennetwerk", async () => {
   while (r && r.done === false) r = await runNetworkJob(240000);
   return r;
 });
+const PEIL_V = 2;   // verhogen als de toewijzing anders berekend wordt
 // Peilgebieden van de waterschappen: per brug en per meetpunt bepalen in welk peilgebied het water ligt.
 // Eens per dag opnieuw (of als bruggen, netwerk of meetpunten nieuwer zijn), anders de bewaarde toewijzing.
 await step("peilgebieden", async () => {
@@ -51,7 +52,7 @@ await step("peilgebieden", async () => {
   if (!brp?.bridges?.length || !net?.sections || !st?.stations?.length) return { skipped: true, reason: "netwerk, bruggen of meetpunten ontbreken" };
   const prev = await store().get("peil");
   const newest = Math.max(...[brp.generatedAt, netp.generatedAt, st.at].map((x) => Date.parse(x || 0) || 0));
-  if (!force && prev?.at && Date.now() - Date.parse(prev.at) < 24 * 3600e3 && Date.parse(prev.at) > newest) return { skipped: true, reason: "toewijzing is van vandaag", gebieden: prev.gebieden?.length };
+  if (!force && prev?.v === PEIL_V && prev?.at && Date.now() - Date.parse(prev.at) < 24 * 3600e3 && Date.parse(prev.at) > newest) return { skipped: true, reason: "toewijzing is van vandaag", gebieden: prev.gebieden?.length };
   const polys = await loadPeilgebieden(getJSON, path.join(os.tmpdir(), "peilgebieden.json"), { force: true, log: (m) => console.log("  " + m) });
   const idx = peilIndex(polys);
   // Streefpeil en getijdegebied langs de vaarweg uit FIS.
@@ -66,10 +67,14 @@ await step("peilgebieden", async () => {
   const used = new Map(), ref = (i) => { if (i < 0) return -1; if (!used.has(i)) used.set(i, used.size); return used.get(i); };
   const info = (p) => ({ w: idx.around(p[0], p[1], 15).map(ref), f: [...new Set(li.near(p[0], p[1], 50).map((k) => lines[k].lab))] });
   const stations = {}, bridges = {};
-  st.stations.forEach((x, i) => { stations[x.code] = info(stp[i]); });
+  // Meetpunt zonder FIS-label maar met duidelijk getij in de metingen (schommeling > 20 cm): als getijdewater behandelen.
+  const hist = (await store().get("hist")) || {};
+  const sdOf = (pts) => { const v = (pts || []).slice(-288).map((p) => p[1]); if (v.length < 72) return null; const m = v.reduce((a, b) => a + b, 0) / v.length; return Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / v.length); };
+  let getijGemeten = 0;
+  st.stations.forEach((x, i) => { const o = info(stp[i]); if (!o.f.length && (sdOf(hist[x.code]?.pts) ?? 0) > 20) { o.f = ["T"]; o.gemeten = 1; getijGemeten++; } stations[x.code] = o; });
   brp.bridges.forEach((b, i) => { bridges[peilKey(b.lat, b.lng)] = info(brp2[i]); });
   const gebieden = [...used.keys()].map((i) => ({ code: polys[i].code, naam: polys[i].naam, wb: polys[i].wb }));
-  await store().setJSON("peil", { at: new Date().toISOString(), bron: "PDOK Waterschappen Waterbeheergebieden IMWA (CC BY-SA 4.0); Rijkswaterstaat FIS streefpeil en getijdegebied (CC-0)", gebieden, streefpeilen: spNames, stations, bridges });
+  await store().setJSON("peil", { v: PEIL_V, at: new Date().toISOString(), bron: "PDOK Waterschappen Waterbeheergebieden IMWA (CC BY-SA 4.0); Rijkswaterstaat FIS streefpeil en getijdegebied (CC-0)", gebieden, streefpeilen: spNames, stations, bridges });
   const cnt = (o) => { const v = Object.values(o); return { metFisLabel: v.filter((a) => a.f.length).length, getij: v.filter((a) => a.f.includes("T")).length, binnendijks: v.filter((a) => a.w.length && !a.w.includes(-1)).length }; };
   // Toets op de paren die bij de vorige run verdacht waren.
   const lgPrev = (await store().get("lags")) || {}, nm = new Map(st.stations.map((x) => [x.code, x.name]));
@@ -81,7 +86,7 @@ await step("peilgebieden", async () => {
     const c = peilCompatible(A, B);
     console.log(`PEILPAAR\t${c.ok ? "samen" : "gescheiden(" + c.why + ")"}\t${nm.get(a)}\t${lab(A)}\t${nm.get(b)}\t${lab(B)}\t${v.why}`);
   }
-  return { peilgebiedenTotaal: polys.length, streefpeilLijnen: sp.length, getijLijnen: tij.length, gebruikteGebieden: gebieden.length, meetpunten: cnt(stations), bruggen: cnt(bridges) };
+  return { getijUitMetingen: getijGemeten, peilgebiedenTotaal: polys.length, streefpeilLijnen: sp.length, getijLijnen: tij.length, gebruikteGebieden: gebieden.length, meetpunten: cnt(stations), bruggen: cnt(bridges) };
 });
 
 // Bruggen koppelen aan meetpunten over het water (sluizen en stuwen scheiden de wateren; daarnaast de peilgebieden).
