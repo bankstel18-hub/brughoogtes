@@ -27,6 +27,11 @@ GitHub voert geplande workflows niet altijd precies op tijd uit; vertragingen va
 
 **Welk meetpunt?** Per brug zoekt `linkViaNetwork` (in `scripts/rws.mjs`) over het FIS-vaarwegennetwerk (vaarwegvakken en knooppunten) de dichtstbijzijnde RWS-meetpunten, tot 25 km over het water. Sluizen en stuwen gelden als scheiding; keersluizen en stormvloedkeringen staan normaal open en scheiden niet. Meetpunten worden op het dichtstbijzijnde vaarwegvak geplaatst (binnen 1,5 km). Per brug worden de drie dichtstbijzijnde bewaard (`sts`); de app kiest de eerste met actuele gegevens.
 
+**Peilgebieden als extra scheiding.** Niet elke sluis of kering staat als scheiding in het netwerk. Daarom toetst `scripts/peil.mjs` elke koppeling ook op het peil van het water (eens per dag berekend, opgeslagen in `data/peil.json`):
+1. FIS-lagen *streefpeil* (50) en *getijdegebied* (198) langs de vaarweg: hebben brug en meetpunt allebei een label, dan moeten die gelijk zijn (getij met getij, of hetzelfde streefpeil). Een meetpunt zonder label maar met duidelijk getij in de metingen (> 20 cm schommeling) telt als getij.
+2. Peilgebieden van de waterschappen (PDOK, *Waterschappen Waterbeheergebieden IMWA*, CC BY-SA 4.0): alleen als FIS niet beslist en beide punten volledig binnendijks liggen, moeten ze in hetzelfde peilgebied liggen. Buitendijks gebruiken we ze niet, omdat sommige waterschappen open rivieren in stukken verdelen.
+Punten worden eerst op de vaarweg gezet, zodat ze op het water liggen en niet op de kade.
+
 **Omrekenen.** Alleen bij een NAP-referentie:
 - rivierbruggen (`mhwreferencelevel` RIVER): onderkant = `clearanceheightclosed + mhwoffset` (= `heightclosed`, getoetst bij 299 van 306)
 - overige bruggen en kunstwerken met `referencelevel` NAP: onderkant = `heightclosed`
