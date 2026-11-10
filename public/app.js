@@ -633,7 +633,7 @@ $("toggle").addEventListener("click", () => {
   setTimeout(() => map.invalidateSize(), 60);
 });
 /* ---------- eigen locatie volgen (blijft op het toestel, wordt nergens heen gestuurd) ---------- */
-let watchId = null, follow = false, meDot = null, meAcc = null, meArrow = null, lastFix = null, programmatic = false;
+let watchId = null, follow = false, centerOnFirst = false, meDot = null, meAcc = null, meArrow = null, lastFix = null, programmatic = false;
 const locBtn = $("locate");
 function setLocState(st) {   // "off" | "on" | "follow"
   locBtn.dataset.state = st;
@@ -644,15 +644,17 @@ function onFix(p) {
   const ll = [p.coords.latitude, p.coords.longitude], acc = p.coords.accuracy || 0;
   const accent = css("--accent");
   if (!meDot) {
-    meAcc = L.circle(ll, { radius: acc, color: accent, weight: 1, fillColor: accent, fillOpacity: 0.12, interactive: false }).addTo(map);
+    // Zelfde tekenlaag als de bruggen: een tweede laag zou tikken op bruggen opvangen.
+    meAcc = L.circle(ll, { renderer, radius: acc, color: accent, weight: 1, fillColor: accent, fillOpacity: 0.12, interactive: false }).addTo(map);
     meArrow = L.marker(ll, { icon: L.divIcon({ className: "mearrow", html: '<i></i>', iconSize: [34, 34] }), interactive: false, keyboard: false }).addTo(map);
-    meDot = L.circleMarker(ll, { radius: 8, color: "#fff", weight: 3, fillColor: accent, fillOpacity: 1 }).addTo(map)
+    meDot = L.circleMarker(ll, { renderer, radius: 8, color: "#fff", weight: 3, fillColor: accent, fillOpacity: 1 }).addTo(map)
       .bindPopup(() => `<div class="pop"><h3>Jouw locatie</h3><div class="note">Nauwkeurigheid ongeveer ${Math.round(acc)} m${p.coords.speed != null && p.coords.speed > 0.3 ? ` · snelheid ${(p.coords.speed * 3.6).toFixed(1).replace(".", ",")} km/u` : ""}</div><div class="stamps">Bepaald om ${new Date(p.timestamp).toLocaleTimeString("nl-NL")}. Je locatie blijft op je toestel en wordt nergens heen gestuurd.</div></div>`);
   } else { meDot.setLatLng(ll); meAcc.setLatLng(ll).setRadius(acc); meArrow.setLatLng(ll); }
   const h = p.coords.heading, moving = p.coords.speed != null && p.coords.speed > 0.5;
   const el = meArrow.getElement();
   if (el) { el.style.visibility = h != null && !isNaN(h) && moving ? "visible" : "hidden"; const i = el.querySelector("i"); if (i) i.style.transform = `rotate(${h || 0}deg)`; }
-  const first = !lastFix;
+  const first = centerOnFirst;
+  centerOnFirst = false;
   lastFix = p;
   if (follow || first) {
     programmatic = true;
@@ -671,6 +673,7 @@ function onLocError(e) {
 function startWatch(withFollow) {
   if (!navigator.geolocation) return setStatus("Je browser kan je locatie niet bepalen.", true);
   follow = withFollow;
+  if (withFollow && !lastFix) centerOnFirst = true;     // alleen na een tik op de knop naar je locatie springen
   if (watchId == null) watchId = navigator.geolocation.watchPosition(onFix, onLocError, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
   setLocState(follow ? "follow" : "on");
   if (follow && lastFix) onFix(lastFix);
