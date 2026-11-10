@@ -25,12 +25,14 @@ GitHub voert geplande workflows niet altijd precies op tijd uit; vertragingen va
 
 ## Waterstandcorrectie
 
-Een brug wordt gecorrigeerd als er een vers meetpunt (< 3 uur oud) binnen 10 km ligt én de brug een NAP-referentie heeft:
+**Welk meetpunt?** Per brug zoekt `linkViaNetwork` (in `scripts/rws.mjs`) over het FIS-vaarwegennetwerk (vaarwegvakken en knooppunten) de dichtstbijzijnde RWS-meetpunten, tot 25 km over het water. Sluizen en stuwen gelden als scheiding; keersluizen en stormvloedkeringen staan normaal open en scheiden niet. Meetpunten worden op het dichtstbijzijnde vaarwegvak geplaatst (binnen 1,5 km). Per brug worden de drie dichtstbijzijnde bewaard (`sts`); de app kiest de eerste met actuele gegevens.
 
-- onderkant brug t.o.v. NAP bekend: `actueel = onderkantNAP − waterstand`
-- referentiepeil t.o.v. NAP bekend: `actueel = hoogte − (waterstand − referentiepeil)`
+**Omrekenen.** Alleen bij een NAP-referentie:
+- rivierbruggen (`mhwreferencelevel` RIVER): onderkant = `clearanceheightclosed + mhwoffset` (= `heightclosed`, getoetst bij 299 van 306)
+- overige bruggen en kunstwerken met `referencelevel` NAP: onderkant = `heightclosed`
+- actuele doorvaarthoogte = onderkant − waterstand
 
-Bruggen zonder NAP-referentie tonen de hoogte bij referentiepeil plus de waterstand van het dichtstbijzijnde meetpunt.
+Bij kanaal-, meer-, streef- of polderpeil, of een onbekend referentiepeil, wordt niet omgerekend; de app toont dan wel de waterstand van het gekoppelde meetpunt met uitleg.
 
 ## Onderhoud
 
