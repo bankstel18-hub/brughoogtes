@@ -50,7 +50,7 @@ await step("koppeling meetpunten", async () => {
   await store().setJSON("bridges", brp);
   return { ...r, seconden: ((Date.now() - t0) / 1000).toFixed(1) };
 });
-await step("looptijden tussen meetpunten", async () => computeLags((await store().get("bridges"))?.bridges || []));
+await step("looptijden tussen meetpunten", async () => computeLags((await store().get("bridges"))?.bridges || [], { force }));
 // verwachtingen opnieuw wegschrijven met de looptijden erin (geen extra verzoeken bij RWS)
 await step("verwachtingen bijwerken met looptijden", () => runForecastUpdate(-1));
 await step("grafiekbestanden", () => writeSeriesFiles());

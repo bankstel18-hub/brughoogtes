@@ -857,7 +857,7 @@ function bestLag(ptsA, ptsB, maxMin = 360, stepMin = 10) {
   }
   return best;
 }
-export async function computeLags(bridges) {
+export async function computeLags(bridges, { force = false } = {}) {
   const s = store();
   const astro = (await s.get("astro")) || {}, hist = (await s.get("hist")) || {}, fc10 = (await s.get("fc10")) || {};
   const prev = (await s.get("lags")) || {};
@@ -866,11 +866,11 @@ export async function computeLags(bridges) {
     const S = (b.sts || []).filter((x) => x[2] === "s").slice(0, 2), E = (b.sts || []).filter((x) => x[2] === "e").slice(0, 2);
     for (const a of S) for (const e of E) if (a[1] + e[1] <= 40) pairs.add([a[0], e[0]].sort().join("|"));
   }
-  const out = {};
+  const out = {}, reasons = {}, samples = [];
   let fresh = 0, reused = 0, ok = 0;
   for (const key of pairs) {
     const p = prev[key];
-    if (p && Date.now() - Date.parse(p.at) < 12 * 3600e3) { out[key] = p; reused++; if (p.ok) ok++; continue; }
+    if (!force && p && Date.now() - Date.parse(p.at) < 12 * 3600e3) { out[key] = p; reused++; if (p.ok) ok++; continue; }
     const [a, b] = key.split("|");
     let basis = "astronomisch", r = bestLag(astro[a]?.pts, astro[b]?.pts);
     if (!r || r.r < 0.95) {
@@ -880,9 +880,12 @@ export async function computeLags(bridges) {
     }
     // Betrouwbaar: hoge overeenkomst, niet aan de rand van het zoekbereik, en de reeksen variëren echt (getij of golf).
     const good = !!r && r.r >= 0.9 && Math.abs(r.lag) < 360 && Math.min(r.sdA, r.sdB) >= 5;
-    out[key] = { at: new Date().toISOString(), lag: good ? r.lag : 0, r: r ? +r.r.toFixed(3) : null, ok: good, basis: good ? basis : "geen" };
+    const why = !r ? (astro[a]?.pts?.length && astro[b]?.pts?.length ? "te weinig overlap" : "geen reeksen") : r.r < 0.9 ? "lage overeenkomst" : Math.abs(r.lag) >= 360 ? "rand zoekbereik" : Math.min(r.sdA, r.sdB) < 5 ? "geen variatie" : "ok";
+    reasons[why] = (reasons[why] || 0) + 1;
+    if (why !== "ok" && samples.length < 8 && (astro[a]?.pts?.length || astro[b]?.pts?.length)) samples.push({ key, why, r: r && +r.r.toFixed(2), lag: r?.lag, sd: r && [Math.round(r.sdA), Math.round(r.sdB)], astro: [astro[a]?.pts?.length || 0, astro[b]?.pts?.length || 0], hist: [hist[a]?.pts?.length || 0, hist[b]?.pts?.length || 0], fc: [fc10[a]?.pts?.length || 0, fc10[b]?.pts?.length || 0] });
+    out[key] = { at: new Date().toISOString(), lag: good ? r.lag : 0, r: r ? +r.r.toFixed(3) : null, ok: good, basis: good ? basis : "geen", why };
     fresh++; if (good) ok++;
   }
   await s.setJSON("lags", out);
-  return { paren: pairs.size, nieuwBerekend: fresh, hergebruikt: reused, metLooptijd: ok };
+  return { paren: pairs.size, nieuwBerekend: fresh, hergebruikt: reused, metLooptijd: ok, redenen: reasons, voorbeelden: samples };
 }
