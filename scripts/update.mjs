@@ -51,6 +51,23 @@ await step("koppeling meetpunten", async () => {
   return { ...r, seconden: ((Date.now() - t0) / 1000).toFixed(1) };
 });
 await step("looptijden tussen meetpunten", async () => computeLags((await store().get("bridges"))?.bridges || [], { force }));
+// Overzicht van paren die vermoedelijk gescheiden zijn (voor controle van het netwerk).
+await step("controlelijst gescheiden paren", async () => {
+  const lg = (await store().get("lags")) || {}, st = await store().get("stations"), brp = await store().get("bridges");
+  const nm = new Map((st?.stations || []).map((x) => [x.code, x]));
+  const per = {};
+  for (const b of brp?.bridges || []) {
+    const S = (b.sts || []).filter((x) => x[2] === "s").slice(0, 2), E = (b.sts || []).filter((x) => x[2] === "e").slice(0, 2);
+    for (const a of S) for (const e of E) { const k = [a[0], e[0]].sort().join("|"); const o = (per[k] ||= { n: 0, km: a[1] + e[1], brug: b.name }); o.n++; if (a[1] + e[1] < o.km) { o.km = a[1] + e[1]; o.brug = b.name; } }
+  }
+  const rows = Object.entries(lg).filter(([, v]) => /gescheiden|lage overeenkomst/.test(v.why || ""));
+  for (const [k, v] of rows.sort((x, y) => (per[y[0]]?.n || 0) - (per[x[0]]?.n || 0))) {
+    const [a, b] = k.split("|"), A = nm.get(a), B = nm.get(b), p = per[k] || {};
+    console.log("PAAR\t" + [A?.name || a, B?.name || b, v.sd?.[0], v.sd?.[1], v.r, v.lagBest, (p.km ?? 0).toFixed(1), p.n || 0, p.brug || "", v.why,
+      A ? `${A.lat.toFixed(4)},${A.lng.toFixed(4)}` : "", B ? `${B.lat.toFixed(4)},${B.lng.toFixed(4)}` : ""].join("\t"));
+  }
+  return { aantal: rows.length };
+});
 // verwachtingen opnieuw wegschrijven met de looptijden erin (geen extra verzoeken bij RWS)
 await step("verwachtingen bijwerken met looptijden", () => runForecastUpdate(-1));
 await step("grafiekbestanden", () => writeSeriesFiles());

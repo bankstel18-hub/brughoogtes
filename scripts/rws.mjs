@@ -890,7 +890,8 @@ export async function computeLags(bridges, { force = false } = {}) {
       : Math.min(r.sdA, r.sdB) < 5 ? "een vlak, een niet (vermoedelijk gescheiden)" : r.r < 0.9 ? "lage overeenkomst" : Math.abs(r.lag) >= 360 ? "rand zoekbereik" : "ok";
     reasons[why] = (reasons[why] || 0) + 1;
     if (why !== "ok" && samples.length < 8 && (astro[a]?.pts?.length || astro[b]?.pts?.length)) samples.push({ key, why, r: r && +r.r.toFixed(2), lag: r?.lag, sd: r && [Math.round(r.sdA), Math.round(r.sdB)], astro: [astro[a]?.pts?.length || 0, astro[b]?.pts?.length || 0], hist: [hist[a]?.pts?.length || 0, hist[b]?.pts?.length || 0], fc: [fc10[a]?.pts?.length || 0, fc10[b]?.pts?.length || 0] });
-    out[key] = { at: new Date().toISOString(), lag: good ? r.lag : 0, r: r ? +r.r.toFixed(3) : null, ok: good, use: good || flat, basis: good ? basis : flat ? "beide vlak" : "geen", why };
+    out[key] = { at: new Date().toISOString(), lag: good ? r.lag : 0, r: r ? +r.r.toFixed(3) : null, ok: good, use: good || flat, basis: good ? basis : flat ? "beide vlak" : "geen", why,
+      sd: r ? [Math.round(r.sdA), Math.round(r.sdB)] : null, lagBest: r?.lag ?? null };
     fresh++; if (good) ok++;
   }
   await s.setJSON("lags", out);
