@@ -87,7 +87,7 @@ export async function fetchFisLines(getJSON, mapServer, layerId) {
   const ids = (await getJSON(`${mapServer}/${layerId}/query?where=1%3D1&returnIdsOnly=true&f=json`)).objectIds || [];
   const out = [];
   for (let i = 0; i < ids.length; i += 200) {
-    const body = new URLSearchParams({ objectIds: ids.slice(i, i + 200).join(","), outFields: "name,value", outSR: "4326", returnGeometry: "true", maxAllowableOffset: "0.0001", f: "json" });
+    const body = new URLSearchParams({ objectIds: ids.slice(i, i + 200).join(","), outFields: "*", outSR: "4326", returnGeometry: "true", maxAllowableOffset: "0.0001", f: "json" });
     const j = await getJSON(`${mapServer}/${layerId}/query`, { method: "POST", body }, 60000);
     for (const f of j.features || []) for (const p of f.geometry?.paths || []) if (p.length > 1) out.push({ a: f.attributes || {}, path: p.map(([x, y]) => [y, x]) });
   }
