@@ -768,8 +768,34 @@ class Heap {                      // kleine binaire heap op [afstand, knooppunt]
   push(x) { const h = this.h; h.push(x); let i = h.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (h[p][0] <= h[i][0]) break; [h[p], h[i]] = [h[i], h[p]]; i = p; } }
   pop() { const h = this.h, top = h[0], last = h.pop(); if (h.length) { h[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < h.length && h[l][0] < h[m][0]) m = l; if (r < h.length && h[r][0] < h[m][0]) m = r; if (m === i) break; [h[m], h[i]] = [h[i], h[m]]; i = m; } } return top; }
 }
+// Punt op een vaarwegvak bij positie f (0..1).
+function pointAt(path, f) {
+  let tot = 0; const cum = [0];
+  for (let i = 1; i < path.length; i++) { tot += Math.hypot((path[i][1] - path[i - 1][1]) * KX, (path[i][0] - path[i - 1][0]) * KY); cum.push(tot); }
+  const want = f * tot;
+  for (let i = 1; i < path.length; i++) if (cum[i] >= want) { const t = cum[i] > cum[i - 1] ? (want - cum[i - 1]) / (cum[i] - cum[i - 1]) : 0; return [path[i - 1][0] + t * (path[i][0] - path[i - 1][0]), path[i - 1][1] + t * (path[i][1] - path[i - 1][1])]; }
+  return path[path.length - 1];
+}
+// Zet punten op het dichtstbijzijnde vaarwegvak (binnen maxKm); anders blijft het punt zelf staan.
+// secOf(i) mag een vak-id geven dat al bekend is (bruggen hebben hun eigen vak).
+export function snapToNetwork(net, pts, { maxKm = 0.3, secOf = () => null } = {}) {
+  const S = net.sections, cell = 0.05, grid = new Map(), key = (la, lo) => `${Math.floor(la / cell)}|${Math.floor(lo / cell)}`;
+  for (const [id, sec] of Object.entries(S)) { const seen = new Set(); for (const p of sec.path) { const k = key(p[0], p[1]); if (!seen.has(k)) { seen.add(k); (grid.get(k) || grid.set(k, []).get(k)).push(id); } } }
+  return pts.map((p, i) => {
+    const own = secOf(i);
+    let best = null;
+    if (own != null && S[own]) { const r = snapToPath(p, S[own].path); if (r) best = { id: own, ...r }; }
+    else {
+      const gy = Math.floor(p[0] / cell), gx = Math.floor(p[1] / cell);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (const id of grid.get(`${gy + dy}|${gx + dx}`) || []) { const r = snapToPath(p, S[id].path); if (r && (!best || r.d < best.d)) best = { id, ...r }; }
+    }
+    return best && best.d <= maxKm ? pointAt(S[best.id].path, best.f) : p;
+  });
+}
+
 // Koppelt elke brug aan de dichtstbijzijnde meetpunten over het water (geen sluis of stuw ertussen).
-export function linkViaNetwork(net, bridges, stations, { maxKm = 25, maxSnapKm = 1.5, keep = 3 } = {}) {
+// peil (optioneel): { allow(brug, meetpuntcode) } die false geeft als brug en meetpunt in verschillende peilgebieden liggen.
+export function linkViaNetwork(net, bridges, stations, { maxKm = 25, maxSnapKm = 1.5, keep = 3, peil = null } = {}) {
   const S = net.sections, B = net.barriers || {};
   // Ruimtelijke index van vakken voor het plaatsen van meetpunten.
   const cell = 0.05, grid = new Map(), key = (la, lo) => `${Math.floor(la / cell)}|${Math.floor(lo / cell)}`;
@@ -801,13 +827,19 @@ export function linkViaNetwork(net, bridges, stations, { maxKm = 25, maxSnapKm =
   for (const [id, sec] of Object.entries(S)) { (adj[sec.s] ||= []).push(id); (adj[sec.e] ||= []).push(id); }
 
   let linked = 0, noSection = 0, viaFallback = 0;
+  const peilRejected = new Set();
   for (const b of bridges) {
     let sid = b.sec != null && S[b.sec] ? String(b.sec) : null, f;
     if (sid) f = snapToPath([b.lat, b.lng], S[sid].path)?.f ?? 0.5;
     else { const r = snapNearest([b.lat, b.lng]); if (r && r.d <= 0.3) { sid = r.id; f = r.f; viaFallback++; } }
     if (!sid) { b.sts = []; noSection++; continue; }
     const found = new Map();   // code -> { km, side }  (side: kant van de brug waarlangs het meetpunt bereikt is)
-    const take = (code, km, side) => { if (km <= maxKm && (!found.has(code) || km < found.get(code).km)) found.set(code, { km, side }); };
+    const sameArea = (code) => !peil || peil.allow(b, code);
+    const take = (code, km, side) => {
+      if (km > maxKm || (found.has(code) && km >= found.get(code).km)) return;
+      if (!sameArea(code)) { peilRejected.add(code + "|" + b.lat); return; }
+      found.set(code, { km, side });
+    };
     const sec0 = S[sid], L0 = sec0.len || 0;
     // meetpunten op het eigen vak
     for (const m of onSec[sid] || []) if (!blocked(sid, f, m.f)) take(m.code, Math.abs(m.f - f) * L0 + m.off, m.f < f ? "s" : "e");
@@ -834,7 +866,7 @@ export function linkViaNetwork(net, bridges, stations, { maxKm = 25, maxSnapKm =
     b.sts = all.filter(([c]) => pickSet.has(c)).map(([c, v]) => [c, +v.km.toFixed(1), v.side]);
     if (b.sts.length) linked++;
   }
-  return { meetpuntenOpNetwerk: placed, van: stations.length, bruggenGekoppeld: linked, van2: bridges.length, zonderVak: noSection, vakOpAfstand: viaFallback };
+  return { meetpuntenOpNetwerk: placed, van: stations.length, bruggenGekoppeld: linked, van2: bridges.length, zonderVak: noSection, vakOpAfstand: viaFallback, afgewezenAnderPeilgebied: peilRejected.size };
 }
 
 

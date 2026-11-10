@@ -53,7 +53,7 @@ jobs:
         run: |
           mkdir -p _site/data
           cp -r public/. _site/
-          for f in bridges locks network stations forecast water status hist fc10 astro lags debug-bridges debug-locks debug-water debug-forecast; do
+          for f in bridges locks network stations peil forecast water status hist fc10 astro lags debug-bridges debug-locks debug-water debug-forecast; do
             curl -sfL --max-time 60 "$SITE/data/$f.json" -o "_site/data/$f.json" || rm -f "_site/data/$f.json"
           done
           ls -la _site/data

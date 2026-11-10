@@ -2,7 +2,10 @@
 //   node scripts/update.mjs <datamap> [bruggen] [--force-bruggen]
 // Waterstanden en verwachtingen worden altijd bijgewerkt; bruggen hooguit eens per ~20 uur
 // (of altijd met --force-bruggen).
-import { setDataDir, runWaterUpdate, runForecastUpdate, runHistoryBackfill, writeSeriesFiles, runBridgeJob, runLockJob, runNetworkJob, linkViaNetwork, computeLags, getStatus, store } from "./rws.mjs";
+import { setDataDir, runWaterUpdate, runForecastUpdate, runHistoryBackfill, writeSeriesFiles, runBridgeJob, runLockJob, runNetworkJob, linkViaNetwork, snapToNetwork, computeLags, getStatus, store, getJSON, FIS } from "./rws.mjs";
+import { loadPeilgebieden, peilIndex, peilKey, fetchFisLines, lineIndex, peilCompatible } from "./peil.mjs";
+import os from "node:os";
+import path from "node:path";
 
 const [dir = "data", ...flags] = process.argv.slice(2);
 setDataDir(dir);
@@ -40,12 +43,62 @@ await step("vaarwegennetwerk", async () => {
   while (r && r.done === false) r = await runNetworkJob(240000);
   return r;
 });
-// Bruggen koppelen aan meetpunten over het water (sluizen en stuwen scheiden de wateren).
+// Peilgebieden van de waterschappen: per brug en per meetpunt bepalen in welk peilgebied het water ligt.
+// Eens per dag opnieuw (of als bruggen, netwerk of meetpunten nieuwer zijn), anders de bewaarde toewijzing.
+await step("peilgebieden", async () => {
+  const brp = await store().get("bridges"), netp = await store().get("network"), st = await store().get("stations");
+  const net = netp?.network;
+  if (!brp?.bridges?.length || !net?.sections || !st?.stations?.length) return { skipped: true, reason: "netwerk, bruggen of meetpunten ontbreken" };
+  const prev = await store().get("peil");
+  const newest = Math.max(...[brp.generatedAt, netp.generatedAt, st.at].map((x) => Date.parse(x || 0) || 0));
+  if (!force && prev?.at && Date.now() - Date.parse(prev.at) < 24 * 3600e3 && Date.parse(prev.at) > newest) return { skipped: true, reason: "toewijzing is van vandaag", gebieden: prev.gebieden?.length };
+  const polys = await loadPeilgebieden(getJSON, path.join(os.tmpdir(), "peilgebieden.json"), { force: true, log: (m) => console.log("  " + m) });
+  const idx = peilIndex(polys);
+  // Streefpeil en getijdegebied langs de vaarweg uit FIS.
+  const ms = FIS.replace(/FeatureServer$/, "MapServer");
+  const sp = (await fetchFisLines(getJSON, ms, 50)).map((l) => ({ ...l, lab: l.a.value != null ? `S:${(+l.a.value).toFixed(2)}` : `S:${l.a.name || "?"}` }));
+  const tij = (await fetchFisLines(getJSON, ms, 198)).map((l) => ({ ...l, lab: "T" }));
+  const lines = [...sp, ...tij], li = lineIndex(lines);
+  const spNames = {}; for (const l of sp) spNames[l.lab] ||= l.a.name || "";
+  // Punten eerst op de vaarweg zetten: dan ligt het punt op het water en niet op de kade of dijk ernaast.
+  const stp = snapToNetwork(net, st.stations.map((x) => [x.lat, x.lng]), { maxKm: 1.5 });
+  const brp2 = snapToNetwork(net, brp.bridges.map((b) => [b.lat, b.lng]), { maxKm: 0.3, secOf: (i) => brp.bridges[i].sec });
+  const used = new Map(), ref = (i) => { if (i < 0) return -1; if (!used.has(i)) used.set(i, used.size); return used.get(i); };
+  const info = (p) => ({ w: idx.around(p[0], p[1], 15).map(ref), f: [...new Set(li.near(p[0], p[1], 50).map((k) => lines[k].lab))] });
+  const stations = {}, bridges = {};
+  st.stations.forEach((x, i) => { stations[x.code] = info(stp[i]); });
+  brp.bridges.forEach((b, i) => { bridges[peilKey(b.lat, b.lng)] = info(brp2[i]); });
+  const gebieden = [...used.keys()].map((i) => ({ code: polys[i].code, naam: polys[i].naam, wb: polys[i].wb }));
+  await store().setJSON("peil", { at: new Date().toISOString(), bron: "PDOK Waterschappen Waterbeheergebieden IMWA (CC BY-SA 4.0); Rijkswaterstaat FIS streefpeil en getijdegebied (CC-0)", gebieden, streefpeilen: spNames, stations, bridges });
+  const cnt = (o) => { const v = Object.values(o); return { metFisLabel: v.filter((a) => a.f.length).length, getij: v.filter((a) => a.f.includes("T")).length, binnendijks: v.filter((a) => a.w.length && !a.w.includes(-1)).length }; };
+  // Toets op de paren die bij de vorige run verdacht waren.
+  const lgPrev = (await store().get("lags")) || {}, nm = new Map(st.stations.map((x) => [x.code, x.name]));
+  const lab = (x) => `${x.w.map((k) => (k < 0 ? "buiten" : gebieden[k].code)).join("/")} | ${x.f.join("/") || "-"}`;
+  for (const [k, v] of Object.entries(lgPrev)) {
+    if (!/gescheiden|lage overeenkomst/.test(v.why || "")) continue;
+    const [a, b] = k.split("|"), A = stations[a], B = stations[b];
+    if (!A || !B) continue;
+    const c = peilCompatible(A, B);
+    console.log(`PEILPAAR\t${c.ok ? "samen" : "gescheiden(" + c.why + ")"}\t${nm.get(a)}\t${lab(A)}\t${nm.get(b)}\t${lab(B)}\t${v.why}`);
+  }
+  return { peilgebiedenTotaal: polys.length, streefpeilLijnen: sp.length, getijLijnen: tij.length, gebruikteGebieden: gebieden.length, meetpunten: cnt(stations), bruggen: cnt(bridges) };
+});
+
+// Bruggen koppelen aan meetpunten over het water (sluizen en stuwen scheiden de wateren; daarnaast de peilgebieden).
 await step("koppeling meetpunten", async () => {
   const brp = await store().get("bridges"), net = (await store().get("network"))?.network, st = await store().get("stations");
   if (!brp?.bridges?.length || !net?.sections || !st?.stations?.length) return { skipped: true, reason: "netwerk, bruggen of meetpunten ontbreken" };
   const t0 = Date.now();
-  const r = linkViaNetwork(net, brp.bridges, st.stations);
+  const pl = await store().get("peil");
+  const why = {}, ex = [], stName = new Map(st.stations.map((x) => [x.code, x.name]));
+  const peil = pl?.stations && pl.stations[Object.keys(pl.stations)[0]]?.w ? { allow: (b, code) => {
+    const pb = pl.bridges[peilKey(b.lat, b.lng)], ps = pl.stations[code], c = peilCompatible(pb, ps);
+    if (!c.ok) { why[c.why] = (why[c.why] || 0) + 1; if (ex.length < 40 && Math.random() < 0.05) ex.push(`${b.name} -> ${stName.get(code)} [${pb.f.join("/")}|${pb.w.join("/")}] vs [${ps.f.join("/")}|${ps.w.join("/")}] (${c.why})`); }
+    return c.ok;
+  } } : null;
+  const r = linkViaNetwork(net, brp.bridges, st.stations, { peil });
+  r.afgewezenPerReden = why;
+  for (const e of ex) console.log("PEILAF\t" + e);
   brp.linkedAt = new Date().toISOString();
   await store().setJSON("bridges", brp);
   return { ...r, seconden: ((Date.now() - t0) / 1000).toFixed(1) };
@@ -60,11 +113,13 @@ await step("controlelijst gescheiden paren", async () => {
     const S = (b.sts || []).filter((x) => x[2] === "s").slice(0, 2), E = (b.sts || []).filter((x) => x[2] === "e").slice(0, 2);
     for (const a of S) for (const e of E) { const k = [a[0], e[0]].sort().join("|"); const o = (per[k] ||= { n: 0, km: a[1] + e[1], brug: b.name }); o.n++; if (a[1] + e[1] < o.km) { o.km = a[1] + e[1]; o.brug = b.name; } }
   }
+  const pl = await store().get("peil");
+  const pn = (code) => { const x = pl?.stations?.[code]; if (!x?.w) return ""; return x.w.map((k) => (k < 0 ? "buiten" : pl.gebieden[k].code)).join("/") + " | " + (x.f.join("/") || "-"); };
   const rows = Object.entries(lg).filter(([, v]) => /gescheiden|lage overeenkomst/.test(v.why || ""));
   for (const [k, v] of rows.sort((x, y) => (per[y[0]]?.n || 0) - (per[x[0]]?.n || 0))) {
     const [a, b] = k.split("|"), A = nm.get(a), B = nm.get(b), p = per[k] || {};
     console.log("PAAR\t" + [A?.name || a, B?.name || b, v.sd?.[0], v.sd?.[1], v.r, v.lagBest, (p.km ?? 0).toFixed(1), p.n || 0, p.brug || "", v.why,
-      A ? `${A.lat.toFixed(4)},${A.lng.toFixed(4)}` : "", B ? `${B.lat.toFixed(4)},${B.lng.toFixed(4)}` : ""].join("\t"));
+      A ? `${A.lat.toFixed(4)},${A.lng.toFixed(4)}` : "", B ? `${B.lat.toFixed(4)},${B.lng.toFixed(4)}` : "", pn(a), pn(b)].join("\t"));
   }
   return { aantal: rows.length };
 });
