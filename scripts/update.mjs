@@ -110,7 +110,8 @@ if (zoek && br?.bridges?.length) {
   const water = await store().get("water");
   const fc = (await store().get("forecast"))?.series || {};
   const km = (a, b, c, d) => { const r = Math.PI / 180, x = (d - b) * r * Math.cos(((a + c) / 2) * r), y = (c - a) * r; return Math.sqrt(x * x + y * y) * 6371; };
-  const hits = br.bridges.filter((b) => b.name.toLowerCase().includes(zoek) || (b.waterway || "").toLowerCase().includes(zoek)).slice(0, 12);
+  const terms = zoek.split("|").map((x) => x.trim()).filter(Boolean);
+  const hits = br.bridges.filter((b) => terms.some((z) => b.name.toLowerCase().includes(z) || (b.waterway || "").toLowerCase().includes(z))).slice(0, 12);
   console.log(`zoek "${zoek}": ${hits.length} resultaten`);
   for (const b of hits) {
     // Zelfde logica als de app: verse meting (< 3 uur), anders de verwachting voor nu.
@@ -121,13 +122,19 @@ if (zoek && br?.bridges?.length) {
       const v = fc[x.code] && interp(fc[x.code].pts, nowS);
       return v != null ? { cm: Math.round(v), soort: fc[x.code].kind, tijd: new Date().toISOString() } : null;
     };
-    const st = (water?.stations || []).map((x) => ({ ...x, l: lvl(x), d: km(b.lat, b.lng, x.lat, x.lng) })).filter((x) => x.l).sort((x, y) => x.d - y.d)[0];
-    const cur = st && st.d <= 10 && b.underNAP != null ? +(b.underNAP - st.l.cm / 100).toFixed(2) : null;
-    const curOpen = st && st.d <= 10 && b.openUnderNAP != null ? +(b.openUnderNAP - st.l.cm / 100).toFixed(2) : null;
+    // Zelfde keuze als de app: meetpunten via het vaarwegennetwerk (open verbinding), eerste met actuele gegevens.
+    const wmap = new Map((water?.stations || []).map((x) => [x.code, x]));
+    let st = null;
+    if (Array.isArray(b.sts)) for (const [code, kmNet] of b.sts) { const x = wmap.get(code); const l = x && lvl(x); if (l) { st = { ...x, l, d: kmNet, net: true }; break; } }
+    else st = (water?.stations || []).map((x) => ({ ...x, l: lvl(x), d: km(b.lat, b.lng, x.lat, x.lng) })).filter((x) => x.l).sort((x, y) => x.d - y.d)[0];
+    const hemels = (water?.stations || []).map((x) => ({ n: x.name, d: +km(b.lat, b.lng, x.lat, x.lng).toFixed(1) })).sort((x, y) => x.d - y.d)[0];
+    const cur = st && (st.net || st.d <= 10) && b.underNAP != null ? +(b.underNAP - st.l.cm / 100).toFixed(2) : null;
+    const curOpen = st && (st.net || st.d <= 10) && b.openUnderNAP != null ? +(b.openUnderNAP - st.l.cm / 100).toFixed(2) : null;
     let minFc = null;
     if (st && b.underNAP != null && fc[st.code]) for (const [t, cm] of fc[st.code].pts) { if (t < nowS) continue; const c = +(b.underNAP - cm / 100).toFixed(2); if (!minFc || c < minFc.c) minFc = { c, t: new Date(t * 1000).toISOString() }; }
     console.log("  brug:", JSON.stringify({ naam: b.name, plaats: b.waterway, beweegbaar: !!b.movable, gesloten: b.closed, open: b.open, ref: b.refName, mhwNAP: b.mhw, onderkantNAP: b.underNAP,
-      meetpunt: st && { naam: st.name, km: +st.d.toFixed(1), cmNAP: st.l.cm, soort: st.l.soort, tijd: st.l.tijd }, actueelGesloten: cur, actueelOpen: curOpen, laagsteVerwacht48u: minFc,
+      meetpunt: st && { naam: st.name, km: +st.d.toFixed(1), overWater: !!st.net, cmNAP: st.l.cm, soort: st.l.soort, tijd: st.l.tijd },
+      kandidaten: b.sts, dichtstbijHemelsbreed: hemels, actueelGesloten: cur, actueelOpen: curOpen, laagsteVerwacht48u: minFc,
       velden: Object.fromEntries(Object.entries(b.a || {}).filter(([k]) => /height|clearance|reference|mhw|type|canopen|width|number/i.test(k))) }));
   }
 }
