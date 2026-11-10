@@ -53,6 +53,8 @@ jobs:
             curl -sfL --max-time 60 "$SITE/data/$f.json" -o "_site/data/$f.json" || rm -f "_site/data/$f.json"
           done
           ls -la _site/data
+          echo "live water.json generatedAt: $(node -e 'try{console.log(require("./_site/data/water.json").generatedAt)}catch(e){console.log("geen")}')"
+          echo "live water.json via curl headers:"; curl -sI --max-time 30 "$SITE/data/water.json" | grep -iE "^(last-modified|cache-control|age|date):" || true
 
       - name: Data bijwerken bij Rijkswaterstaat
         env:
