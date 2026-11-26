@@ -1,0 +1,16 @@
+name: Foutmelding brug of sluis
+description: Een hoogte, afmeting of waterstand in de app klopt niet
+labels: [foutmelding]
+body:
+  - type: textarea
+    id: wat
+    attributes:
+      label: Wat klopt er niet?
+      description: Bijvoorbeeld "De hoogteschaal gaf 3,10 m, de app 3,40 m". Een foto van de hoogteschaal helpt veel.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Gegevens uit de app
+      description: Wordt automatisch ingevuld als je via "Klopt er iets niet?" in de app meldt.

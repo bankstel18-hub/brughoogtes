@@ -1,0 +1,11 @@
+{
+  "name": "brughoogtes",
+  "private": true,
+  "type": "module",
+  "description": "Doorvaarthoogtes van bruggen in Nederland met actuele waterstanden van Rijkswaterstaat",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "serve": "npx --yes http-server public -p 8080 -c-1"
+  },
+  "engines": { "node": ">=20" }
+}

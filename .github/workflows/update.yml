@@ -1,7 +1,8 @@
 # Haalt elke 10 minuten de waterstanden en verwachtingen op (bruggen en sluizen eens per dag)
 # en zet de app met de nieuwe data op GitHub Pages.
-# Elke run plant zelf de volgende in (job 'volgende'), omdat GitHub geplande runs onregelmatig start.
-# De 'schedule' hieronder blijft als vangnet staan.
+# GitHub start geplande runs niet altijd op tijd (vaak 10 tot 30 minuten later). De app toont dan een
+# waarschuwing en gebruikt voor "nu" de verwachting van Rijkswaterstaat als de meting ouder is dan 30 minuten.
+# Vóór publicatie: tests (app-code) en datacontrole (nieuwe data tegen de vorige versie).
 name: Data bijwerken en publiceren
 
 on:
@@ -28,7 +29,6 @@ permissions:
   contents: write   # alleen voor de maandelijkse 'keepalive'-commit
   pages: write
   id-token: write
-  actions: write    # om de volgende run in te plannen
 
 jobs:
   update:
@@ -47,16 +47,22 @@ jobs:
         with:
           node-version: 22
 
+      # Rekenregels en routeplanner testen. Mislukt dit, dan wordt de app niet gepubliceerd.
+      - name: Tests
+        id: tests
+        run: npm test
+
       - name: App klaarzetten en vorige data ophalen
         env:
           SITE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         run: |
           mkdir -p _site/data
           cp -r public/. _site/
-          for f in bridges locks network stations peil forecast water status hist fc10 astro lags debug-bridges debug-locks debug-water debug-forecast; do
+          for f in bridges locks network route-net stations peil forecast water status hist fc10 astro lags check debug-bridges debug-locks debug-water debug-forecast; do
             curl -sfL --max-time 60 "$SITE/data/$f.json" -o "_site/data/$f.json" || rm -f "_site/data/$f.json"
           done
           ls -la _site/data
+          cp -r _site/data _prev      # vorige versie, voor de datacontrole
           echo "live water.json generatedAt: $(node -e 'try{console.log(require("./_site/data/water.json").generatedAt)}catch(e){console.log("geen")}')"
           echo "live water.json via curl headers:"; curl -sI --max-time 30 "$SITE/data/water.json" | grep -iE "^(last-modified|cache-control|age|date):" || true
 
@@ -71,17 +77,24 @@ jobs:
           ZOEK: ${{ inputs.zoek }}
         run: node scripts/update.mjs _site/data ${{ inputs.force_bruggen && '--force-bruggen' || '' }}
 
+      # Nieuwe data vergelijken met de vorige versie en de testset bekende bruggen (tests/bekende-bruggen.json).
+      # Afgekeurd: vorige versie blijft staan, de run wordt rood en GitHub stuurt een e-mail.
+      - name: Datacontrole
+        id: check
+        if: always() && steps.tests.outcome == 'success'
+        run: node scripts/check.mjs _site/data _prev
+
       - name: Tijdelijke bestanden opruimen
         if: always()
         run: rm -f _site/data/bridgejob.json _site/data/bj__*.json _site/data/lockjob.json _site/data/lj__*.json _site/data/netjob.json _site/data/nj__*.json
 
       - uses: actions/upload-pages-artifact@v3
-        if: always()
+        if: always() && steps.tests.outcome == 'success'
         with:
           path: _site
 
       - id: deploy
-        if: always()
+        if: always() && steps.tests.outcome == 'success'
         uses: actions/deploy-pages@v4
 
       # GitHub zet geplande workflows uit na 60 dagen zonder activiteit in de repository.
@@ -95,32 +108,4 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit --allow-empty -m "Repository actief houden (automatisch)"
             git push
-          fi
-
-  # Plant de volgende update over ~10 minuten in. Slaat over als er al een andere run loopt of wacht,
-  # zodat er altijd maar één keten actief is.
-  volgende:
-    needs: update
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Wachten en volgende update starten
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SELF: ${{ github.run_id }}
-        run: |
-          sleep 540
-          active=$(gh api "repos/$REPO/actions/workflows/update.yml/runs?per_page=20" \
-            --jq "[.workflow_runs[] | select((.status==\"queued\" or .status==\"in_progress\" or .status==\"waiting\" or .status==\"pending\") and .id != $SELF)] | length")
-          echo "andere actieve runs: $active"
-          if [ "$active" = "0" ]; then
-            for i in 1 2 3 4 5; do
-              if gh api -X POST "repos/$REPO/actions/workflows/update.yml/dispatches" -f ref=main; then
-                echo "volgende update gestart"; exit 0
-              fi
-              echo "starten mislukt (poging $i), opnieuw over 20 s"; sleep 20
-            done
-            exit 1
           fi
