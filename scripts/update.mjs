@@ -3,6 +3,7 @@
 // Waterstanden en verwachtingen worden altijd bijgewerkt; bruggen hooguit eens per ~20 uur
 // (of altijd met --force-bruggen).
 import { setDataDir, runWaterUpdate, runForecastUpdate, runHistoryBackfill, writeSeriesFiles, runBridgeJob, runLockJob, runNetworkJob, linkViaNetwork, snapToNetwork, computeLags, getStatus, store, getJSON, FIS } from "./rws.mjs";
+import { buildRouteNet } from "./routenet.mjs";
 import { loadPeilgebieden, peilIndex, peilKey, fetchFisLines, lineIndex, peilCompatible } from "./peil.mjs";
 import os from "node:os";
 import path from "node:path";
@@ -43,6 +44,17 @@ await step("vaarwegennetwerk", async () => {
   while (r && r.done === false) r = await runNetworkJob(240000);
   return r;
 });
+// Compact netwerk voor de routecheck in de app (alleen opnieuw als het netwerk nieuwer is).
+await step("routenetwerk voor de app", async () => {
+  const netp = await store().get("network");
+  if (!netp?.network?.sections) return { skipped: true, reason: "geen netwerk" };
+  const prev = await store().get("route-net");
+  if (!force && prev?.generatedAt === netp.generatedAt) return { skipped: true, reason: "ongewijzigd" };
+  const rn = buildRouteNet(netp.network, netp.generatedAt);
+  await store().setJSON("route-net", rn);
+  return { vakken: rn.sections.length, punten: rn.sections.reduce((t, x) => t + x[4].length, 0) };
+});
+
 const PEIL_V = 2;   // verhogen als de toewijzing anders berekend wordt
 // Peilgebieden van de waterschappen: per brug en per meetpunt bepalen in welk peilgebied het water ligt.
 // Eens per dag opnieuw (of als bruggen, netwerk of meetpunten nieuwer zijn), anders de bewaarde toewijzing.

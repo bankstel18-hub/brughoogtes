@@ -6,10 +6,32 @@ Web-app (PWA) met de doorvaarthoogtes van bruggen in Nederland, gecorrigeerd voo
 
 | Onderdeel | Bestand | Wat het doet |
 |---|---|---|
-| App | `public/` | Kaart (Leaflet + PDOK), filters op kruiphoogte, vaartijdstip tot 48 uur vooruit, installeerbaar als app, werkt offline met de laatst bekende data |
-| Automatische update | `.github/workflows/update.yml` | Draait elke 10 minuten op GitHub Actions en publiceert de app met verse data op GitHub Pages |
+| App | `public/` | Kaart (Leaflet + PDOK), filters op kruiphoogte, vaartijdstip tot 48 uur vooruit, routecheck, bootprofielen, installeerbaar als app, werkt offline met de laatst bekende data |
+| Automatische update | `.github/workflows/update.yml` | Elke 10 minuten op GitHub Actions: tests, data bijwerken, datacontrole, publiceren op GitHub Pages (zie `docs/HOSTING.md`) |
 | Updatescript | `scripts/update.mjs` | Waterstanden en verwachtingen altijd, bruggen hooguit eens per ~20 uur |
 | Gedeelde logica | `scripts/rws.mjs` | Ophalen en normaliseren van de RWS-data, opslag als JSON in `data/` |
+| Datacontrole | `scripts/check.mjs` | Keurt nieuwe data af als die verdacht afwijkt van de vorige versie of van de testset; de vorige versie blijft dan staan |
+| Routenetwerk | `scripts/routenet.mjs` | Compact vaarwegennetwerk voor de routecheck (`data/route-net.json`) |
+| Tests | `tests/` | `npm test`. Ook de testset bekende bruggen: `tests/bekende-bruggen.json` |
+
+### Opbouw van de app (`public/js/`)
+
+| Module | Inhoud |
+|---|---|
+| `main.js` | Start: gegevens laden, knoppen koppelen, periodiek verversen |
+| `config.js` | Instellingen die je zelf aanpast: versie, e-mail voor meldingen, waarschuwingsgrens, standaardsnelheid |
+| `core.js` | Pure rekenregels: doorvaarthoogte, keuze meting of verwachting, oordeel per brug, sluiskolken (getest) |
+| `route.js` | Routeplanner over het vaarwegennetwerk (getest) |
+| `water.js` | Waterstand en doorvaarthoogte per brug, koppeling met meetpunten |
+| `map.js` | Kaart, lagen, markeringen, koppelingslijnen, lijst "laagste bruggen" |
+| `popups.js` | Popups van brug, sluis en meetpunt, contactgegevens, meldknop |
+| `chart.js` | Waterstandgrafiek |
+| `panel.js` | Teksten in het paneel (tijdstip, actualiteit, waarschuwing) |
+| `profiles.js` | Instellingen en bootprofielen bewaren (alleen op het toestel) |
+| `routeui.js` | Bediening van de routecheck |
+| `locate.js` | Eigen locatie tonen en volgen |
+
+Na een wijziging aan de app: verhoog `APP_VERSION` in `config.js` en `VERSION` in `public/sw.js`, en zet een regel in `CHANGELOG.md`. Lokaal bekijken: `npm run serve` en open `http://localhost:8080`. Met `#debug` achter het adres staan kaart en gegevens in de console als `bh`.
 
 De data staat op GitHub Pages in `data/`: `bridges.json`, `water.json`, `forecast.json`, `stations.json`, `status.json` en `debug-*.json` (velden en voorbeelden uit de bronnen, voor onderhoud).
 
@@ -21,7 +43,8 @@ GitHub voert geplande workflows niet altijd precies op tijd uit; vertragingen va
 
 - **Bruggen en doorvaartopeningen**: Rijkswaterstaat Fairway Information Services (FIS), ArcGIS FeatureServer `GDR/fis_vnds`, licentie CC-0.
 - **Waterstanden en verwachtingen**: Rijkswaterstaat WaterWebservices (DD-API 2.0), `ddapi20-waterwebservices.rijkswaterstaat.nl`.
-- **Kaart**: PDOK BRT-achtergrondkaart en luchtfoto, OpenStreetMap, OpenSeaMap.
+- **Peilgebieden**: Waterschappen Waterbeheergebieden IMWA via PDOK, CC BY-SA 4.0.
+- **Kaart**: PDOK BRT-achtergrondkaart (grijs en kleur) en luchtfoto; OpenSeaMap als optionele laag.
 
 ## Waterstandcorrectie
 
@@ -38,6 +61,14 @@ Punten worden eerst op de vaarweg gezet, zodat ze op het water liggen en niet op
 - actuele doorvaarthoogte = onderkant − waterstand
 
 Bij kanaal-, meer-, streef- of polderpeil, of een onbekend referentiepeil, wordt niet omgerekend; de app toont dan wel de waterstand van het gekoppelde meetpunt met uitleg.
+
+## Routecheck
+
+De app laadt `data/route-net.json` (of anders `data/network.json`) pas als je een route kiest. `route.js` zoekt met Dijkstra de kortste weg over de FIS-vaarwegvakken. Bruggen worden op de route geplaatst via hun eigen vak (`sec`), sluizen via `fairwaysectionid` of het dichtstbijzijnde vak. Per brug rekent de app het verwachte tijdstip van aankomst uit (vaartijdstip plus afstand gedeeld door snelheid) en gebruikt de waterstand op dat moment. De route houdt geen rekening met vaarwegklassen, bedientijden of stremmingen.
+
+## Testset bekende bruggen
+
+`tests/bekende-bruggen.json` bevat bruggen waarvan de hoogte zeker is. Bij elke update controleert `scripts/check.mjs` of de data daar nog mee klopt. Voeg bruggen toe met een hoogte van de hoogteschaal of van vaarweginformatie.nl. Hoe, staat bovenin het bestand. Vijftien tot dertig bruggen, verspreid over rivieren, kanalen en getijdewater, geven een goed vangnet.
 
 ## Onderhoud
 

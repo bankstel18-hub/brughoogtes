@@ -289,7 +289,7 @@ const RE_UNDER_NAP = [/(underside|onderkant|bottom|hoogte|height).*nap|nap.*(hoo
 const RE_REF_NAP = [/(reference|referentie|ref).?(level|peil|niveau)?.*nap|^(referencelevel|referentiepeil|kp|kruinpeil|streefpeil)$/i];
 const RE_REF_NAME = [/reference.?level|referentie.?peil|refniveau|ref_level|ijkvlak/i];
 
-function normalize(a, p, parent, src) {
+export function normalize(a, p, parent, src) {
   const all = Object.assign({}, parent || {}, a);
   const navNum = (v) => { const n = num(v); return n == null || Math.abs(n) > 5000 ? null : (Math.abs(n) > 60 ? +(n / 100).toFixed(2) : +n.toFixed(2)); };
   const minOf = (...v) => { const x = v.filter((n) => n != null); return x.length ? Math.min(...x) : null; };
@@ -345,7 +345,7 @@ function normalize(a, p, parent, src) {
   };
 }
 
-function assemble(bridgeFeats, openFeats, complexFeats = []) {
+export function assemble(bridgeFeats, openFeats, complexFeats = []) {
   const res = [];
   const cIndex = new Map(complexFeats.map((f) => [String(f.a.id), f]));
   const idKey = (a) => Object.keys(a).find((k) => /^id$/i.test(k)) || Object.keys(a).find((k) => /^(bridgeid|brugid|isrs|code)$/i.test(k));
@@ -378,7 +378,7 @@ function pickNum(a, regs, exclude) {
   }
   return null;
 }
-function assembleLocks(lockFeats, chamberFeats) {
+export function assembleLocks(lockFeats, chamberFeats) {
   const idOf = (a) => a.id ?? a.Id ?? a.ID;
   const byId = new Map();
   for (const f of lockFeats) { const k = String(idOf(f.a)); const prev = byId.get(k); if (!prev || (!prev.f.p && f.p)) byId.set(k, { f, chambers: [] }); }

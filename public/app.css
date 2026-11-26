@@ -155,3 +155,39 @@ button.btn{font:600 13.5px var(--f-ui);padding:5px 10px;border-radius:6px;border
 .legend2 i.dotkey{width:9px;height:9px;border-radius:50%;vertical-align:0}
 
 .legend2 i.dashkey{height:0;background:none!important;width:16px;vertical-align:3px}
+
+/* Bootprofielen */
+.profiles{display:flex;gap:6px;align-items:center}
+.sec>*{min-width:0}
+.profiles select{flex:1;min-width:0;width:0;font:15px var(--f-ui);padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button.btn:disabled{opacity:.45;cursor:default}
+
+/* Routecheck */
+.routebtns{display:flex;gap:6px}
+.btn.primary-sm{background:var(--accent);color:#fff;border-color:var(--accent)}
+#routeOut{display:grid;gap:6px}
+#routeOut:empty{display:none}
+#routeOut .err{color:var(--bad)}
+.rsum{font:600 14px var(--f-ui)}
+.rverdict{font-size:14px}
+.rlist{display:grid;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-top:4px}
+.ritem{display:grid;grid-template-columns:44px 14px 1fr;gap:6px;align-items:baseline;padding:5px 8px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13.5px}
+.ritem:last-child{border-bottom:0}
+.ritem:hover{background:var(--accent-soft)}
+.ritem .dot{margin:0}
+.ritem .m{color:var(--muted);font-size:12.5px}
+.rkm{font:500 12px var(--f-num);color:var(--muted);text-align:right}
+#routeOut details summary{cursor:pointer;font-size:13.5px;color:var(--accent);font-weight:600}
+#routeOut .small{margin:0}
+.rpin b{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#0b5d8f;color:#fff;font:700 13px var(--f-ui);border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+.routehint{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
+#map.picking{cursor:crosshair}
+/* Tijdens het kiezen van de route: tikken op een brug of meetpunt telt als tikken op de kaart */
+#map.picking .leaflet-marker-icon,#map.picking .leaflet-overlay-pane canvas,#map.picking .leaflet-interactive{pointer-events:none!important}
+
+/* Koppelingslijnen, contact, melden */
+.lnk{display:inline-block;width:16px;height:0;margin-right:6px;vertical-align:3px;border-top:2px solid var(--water)}
+.pop .contact{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px;font-size:13.5px}
+.pop .contact a{color:var(--accent);font-weight:600;text-decoration:none}
+.pop a.report{display:inline-block;margin-top:8px;font-size:12.5px;color:var(--accent);font-weight:600}
+.modal-box h3{margin:14px 0 6px;font-size:16px}

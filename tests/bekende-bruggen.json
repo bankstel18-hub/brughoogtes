@@ -1,0 +1,15 @@
+{
+  "uitleg": [
+    "Testset bekende bruggen. Bij elke update controleert scripts/check.mjs of deze bruggen nog de verwachte hoogte hebben.",
+    "Wijkt er één af, dan blijft de vorige brugdata staan en wordt de run rood (GitHub stuurt een e-mail).",
+    "Per brug: naam (deel van de naam in de app), lat/lng (ongeveer, binnen 300 m), veld, verwacht (meter), marge (meter), bron.",
+    "veld: 'underNAP' = onderkant brug t.o.v. NAP (rivierbruggen en bruggen met NAP-referentie)",
+    "      'closed'   = doorvaarthoogte gesloten t.o.v. het referentiepeil (zoals FIS en vaarweginformatie.nl die geven)",
+    "      'open'     = doorvaarthoogte open stand",
+    "Neem bruggen waarvan je de hoogte zeker weet: van de hoogteschaal ter plaatse of van vaarweginformatie.nl.",
+    "Zet 'actief' op false om een brug tijdelijk over te slaan. Het voorbeeld hieronder staat uit: vervang het door echte bruggen."
+  ],
+  "bruggen": [
+    { "naam": "Voorbeeldbrug", "lat": 51.9225, "lng": 4.4792, "veld": "closed", "verwacht": 5.40, "marge": 0.05, "bron": "vaarweginformatie.nl, gecontroleerd op [datum]", "actief": false }
+  ]
+}
